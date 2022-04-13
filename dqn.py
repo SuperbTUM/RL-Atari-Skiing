@@ -1,0 +1,285 @@
+import tensorflow as tf
+import tensorflow.keras as keras
+import numpy as np
+import gym
+import time
+from PIL import Image, ImageFilter
+
+
+# Our Experience Replay memory
+action_history = []
+state_history = []
+state_next_history = []
+rewards_history = []
+done_history = []
+
+
+def model_creator(num_actions=3, is_rnn=False, input_shape=(60, 60, 1)):
+    model = keras.Sequential()
+    model.add(keras.layers.Conv2D(32, (8, 8), strides=4, kernel_initializer="he_normal", activation="relu",
+                                  input_shape=input_shape))
+    model.add(keras.layers.Conv2D(64, (4, 4), strides=2, kernel_initializer="he_normal", activation="relu"))
+    model.add(keras.layers.Conv2D(64, (3, 3), strides=1, kernel_initializer="he_normal", activation="relu"))
+    model.add(keras.layers.Flatten())
+    if is_rnn:
+        model.add(keras.layers.Lambda(lambda x: tf.expand_dims(x, -1)))
+        model.add(keras.layers.LSTM(128, return_sequences=True, activation="relu"))
+    model.add(keras.layers.Dense(512, activation="relu"))
+    model.add(keras.layers.Dense(num_actions))
+    return model
+
+
+def heuristic_agent():
+
+    def get_pos_player(observe):
+        ids = np.where(np.sum(observe == [214, 92, 92], -1) == 3)
+        return ids[0].mean(), ids[1].mean()
+
+    def get_pos_flags(observe):
+        if np.any(np.sum(observe == [184, 50, 50], -1) == 3):
+            ids = np.where(np.sum(observe == [184, 50, 50], -1) == 3)
+            return ids[0].mean(), ids[1].mean()
+        else:
+            ids = np.where(np.sum(observe == [66, 72, 200], -1) == 3)
+            return ids[0].mean(), ids[1].mean()
+
+    def get_speed(observe, observe_old):
+        # As the vertical location of the player is not changed,
+        # I estimate the vertical speed by measuring how much frames are shifted up.
+        min_val = np.inf
+        min_idx = 0
+        for k in range(0, 7):
+            val = np.sum(np.abs(observe[54:-52, 8:152] - observe_old[54 + k:-52 + k, 8:152]))
+            if min_val > val:
+                min_idx = k
+                min_val = val
+        return min_idx
+
+    observe = env.reset()
+    step = 0
+    done = False
+    # states
+    r_a, c_a = get_pos_player(observe)
+    r_f, c_f = get_pos_flags(observe)
+    r_a_old, c_a_old = r_a, c_a
+    observe_old = observe
+    while not done:
+        step += 1
+        v_f = np.arctan2(r_f - r_a, c_f - c_a)  # direction from player to target
+        spd = get_speed(observe, observe_old)
+        v_a = np.arctan2(spd, c_a - c_a_old)  # speed vector of the player
+        r_a_old, c_a_old = r_a, c_a
+        observe_old = observe
+        if spd == 0 and (c_a - c_a_old) == 0:
+            # no movement
+            act = np.random.choice(3, 1)[0]
+        else:
+            if v_f - v_a < -0.1:
+                act = 1
+            elif v_f - v_a > 0.1:
+                act = 2
+            else:
+                act = 0
+
+        observe, reward, done, _ = env.step(act)
+        state_next = process_state(observe)
+        state = process_state(observe_old)
+
+        action_history.append(act)
+        rewards_history.append(reward)
+        state_next_history.append(state_next)
+        state_history.append(state)
+        done_history.append(done)
+
+        r_a, c_a = get_pos_player(observe)
+        r_f, c_f = get_pos_flags(observe)
+
+
+def process_state(state, ratio=0.45):
+    state = Image.fromarray(state[28:-35, 8:152, :]).convert('L')
+    preprocessed_state = np.asarray(state)
+    preprocessed_state = np.where(preprocessed_state >= 180, 236, preprocessed_state)
+    preprocessed_state = Image.fromarray(preprocessed_state)
+    preprocessed_state = preprocessed_state.resize(
+        (min(60, int(preprocessed_state.size[0] * ratio)), min(60, int(preprocessed_state.size[1] * ratio))), Image.LANCZOS)
+    preprocessed_state = preprocessed_state.filter(ImageFilter.EDGE_ENHANCE_MORE)
+    state = np.expand_dims(np.asarray(preprocessed_state), axis=-1)
+    return state
+
+
+def trainer(gamma=0.99,
+            batch_size=4,
+            learning_rate=0.001,
+            max_memory=3000,
+            target_update_every=1440,
+            max_steps_per_episode=1440,
+            max_episodes=1000,
+            update_after_actions=4,
+            randomly_update_memory_after_actions=True,
+            last_n_reward=100,
+            threshold_timestep=500,
+            target_avg_reward=-4000
+            ):
+    # Model used for selecting actions (principal)
+    model = model_creator()
+    # Then create the target model. This will periodically be copied from the principal network
+    model_target = model_creator()
+
+    model.build((batch_size, resize_shape, resize_shape, 1))
+    model_target.build((batch_size, resize_shape, resize_shape, 1))
+
+    optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
+    loss_function = keras.losses.Huber()  # You can use the Huber loss function or the mean squared error
+
+    running_reward = 0
+    episode_count = 0
+    episode_reward_history = []
+
+    # how often to train your model - this allows you to speed up learning
+    # by not performing in every iteration learning. See also refernece paper
+    # you can set this value to other values like 1 as well to learn every time
+
+    epsilon = 1.
+    running_rewards = list()
+
+    for episode in range(max_episodes):
+        state = process_state(np.asarray(env.reset()))
+        episode_reward = 0
+        timestep_count = 0
+        done = False
+        print("episode", episode)
+        start = time.time()
+        for timestep in range(1, max_steps_per_episode):
+            timestep_count += 1
+            # exploration
+            if np.random.uniform() < epsilon:
+                # Take random action
+                action = np.random.choice(3)
+            else:
+                # Predict action Q-values
+                state_t = tf.convert_to_tensor(state.astype(np.float32))
+                state_t = tf.expand_dims(state_t, 0)
+                action_vals = model(state_t, training=False)
+                # Choose the best action
+                action = tf.argmax(action_vals[0]).numpy()
+            if timestep_count > threshold_timestep:
+                epsilon = max(0.01, epsilon * 0.995)
+            else:
+                epsilon = max(0.1, epsilon * 0.995)
+            # follow selected action
+            state_next, reward, done, _ = env.step(action)
+            state_next = process_state(state_next)
+            if done:
+                # there should be a huge punishment due to not crossing the flags
+                for i in range(len(rewards_history)-timestep_count, len(rewards_history)):
+                    rewards_history[i] += reward / timestep_count
+            else:
+                episode_reward += reward
+
+            # Save action/states and other information in replay buffer
+            action_history.append(action)
+            state_history.append(state)
+            state_next_history.append(state_next)
+            rewards_history.append(reward)
+            done_history.append(done)
+
+            state = state_next
+
+            # Update every Xth frame to speed up (optional)
+            # and if you have sufficient history
+            if randomly_update_memory_after_actions:
+                update_after_actions = np.random.choice(np.arange(start=update_after_actions//2,
+                                                                  stop=update_after_actions+1,
+                                                                  step=1))
+            if timestep_count % update_after_actions == 0 and len(action_history) > batch_size:
+                #  Sample a set of batch_size memories from the history
+                state_history = np.asarray(state_history)
+                state_next_history = np.asarray(state_next_history)
+                rewards_history = np.asarray(rewards_history)
+                action_history = np.asarray(action_history)
+                done_history = np.asarray(done_history)
+
+                idx = np.random.choice(range(len(state_history)), batch_size, False)
+
+                state_sample = state_history[idx]
+                state_next_sample = state_next_history[idx]
+                rewards_sample = rewards_history[idx]
+                action_sample = action_history[idx]
+                done_sample = done_history[idx]
+
+                state_history = state_history.tolist()
+                state_next_history = state_next_history.tolist()
+                rewards_history = rewards_history.tolist()
+                action_history = action_history.tolist()
+                done_history = done_history.tolist()
+
+                # Create for the sample states the targets (r+gamma * max Q(...) )
+                Q_next_state = model_target.predict(state_next_sample)
+                Q_targets = rewards_sample + gamma * tf.reduce_max(Q_next_state, axis=-1)
+
+                # If the episode was ended (done_sample value is 1)
+                # you can penalize the Q value of the target by some value `penalty`
+
+                # What actions are relevant and need updating
+                relevant_actions = tf.one_hot(action_sample, 3)
+                # we will use Gradient tape to do a custom gradient
+                # in the `with` environment we will record a set of operations
+                # and then we will take gradients with respect to the trainable parameters
+                # in the neural network
+                with tf.GradientTape() as tape:
+                    # Train the model on your action selecting network
+                    q_values = model(tf.convert_to_tensor(state_sample, dtype=np.float32))
+                    # We consider only the relevant actions
+                    Q_of_actions = tf.reduce_sum(tf.multiply(q_values, relevant_actions), axis=1)
+                    # Calculate loss between principal network and target network
+                    loss = loss_function(Q_targets, Q_of_actions)
+
+                # Nudge the weights of the trainable variables towards
+                grads = tape.gradient(loss, model.trainable_variables)
+                optimizer.apply_gradients(zip(grads, model.trainable_variables))
+
+            if timestep_count % target_update_every == 0:
+                # update the the target network with new weights
+                model_target.set_weights(model.get_weights())
+                # Log details
+                template = "running reward: {:.2f} at episode {}, frame count {}, epsilon {}"
+                print(template.format(running_reward, episode_count, timestep_count, epsilon))
+
+            # Don't let the memory grow beyond the limit
+            if len(rewards_history) > max_memory:
+                del rewards_history[:len(rewards_history)-max_memory]
+                del state_history[:len(state_history)-max_memory]
+                del state_next_history[:len(state_next_history)-max_memory]
+                del action_history[:len(action_history)-max_memory]
+                del done_history[:len(done_history)-max_memory]
+            if done: break
+        if not done:
+            for i in range(len(rewards_history) - timestep_count, len(rewards_history)):
+                rewards_history[i] -= 10000 / timestep_count
+
+        # reward of last n episodes
+        episode_reward_history.append(episode_reward)
+        if len(episode_reward_history) > last_n_reward: del episode_reward_history[:1]
+        running_reward = np.mean(episode_reward_history)
+        running_rewards.append(running_reward)
+        episode_count += 1
+        # If you want to stop your training once you achieve the reward you want you can
+        # have an if statement here. Alternatively you can stop after a fixed number
+        # of episodes.
+        if running_reward > target_avg_reward:
+            break
+        end = time.time()
+        print("time per episode {:.4f} seconds".format(end - start))
+
+
+if __name__ == "__main__":
+    if tf.__version__[0] == "1":
+        tf.compat.v1.enable_eager_execution()
+    envname = "ALE/Skiing-v5"  # environment name
+    env = gym.make(envname)
+    resize_shape = 60
+    play_times = 2
+    for _ in range(play_times):
+        heuristic_agent()
+
+    trainer()
