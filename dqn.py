@@ -4,6 +4,8 @@ import numpy as np
 import gym
 import time
 from PIL import Image, ImageFilter
+import warnings
+warnings.filterwarnings("ignore")
 
 
 # Our Experience Replay memory
@@ -12,6 +14,81 @@ state_history = []
 state_next_history = []
 rewards_history = []
 done_history = []
+priorities = []
+
+
+class PrioritizedBuffer:
+    def __init__(self, capacity=1000, prob_alpha=0.6, beta=0.4):
+        self.prob_alpha = prob_alpha
+        self.capacity = capacity
+        self.action_history = action_history[:min(capacity, len(action_history))]
+        self.state_history = state_history[:min(capacity, len(state_history))]
+        self.state_next_history = state_next_history[:min(capacity, len(state_next_history))]
+        self.rewards_history = rewards_history[:min(capacity, len(rewards_history))]
+        self.done_history = done_history[:min(capacity, len(done_history))]
+        self.pos = len(action_history)
+        if len(priorities) >= capacity:
+            self.priorities = np.asarray(priorities[:capacity], dtype=np.float32)
+        else:
+            self.priorities = np.asarray(priorities + [0 for _ in range(capacity-len(priorities))], dtype=np.float32)
+        self.cnt = len(action_history)
+        self.beta = beta
+
+    def push(self, state, action, reward, next_state, done):
+        max_prio = np.max(self.priorities) if self.state_history else 1.0
+
+        if self.cnt < self.capacity:
+            self.action_history.append(action)
+            self.state_history.append(state)
+            self.state_next_history.append(next_state)
+            self.rewards_history.append(reward)
+            self.done_history.append(done)
+            self.cnt += 1
+        else:
+            self.action_history[self.pos] = action
+            self.state_history[self.pos] = state
+            self.state_next_history[self.pos] = next_state
+            self.rewards_history[self.pos] = reward
+            self.done_history[self.pos] = done
+
+        self.priorities[self.pos] = max_prio
+        self.pos = (self.pos + 1) % self.capacity
+
+    def _beta_update(self, frame_idx, beta_frames=1000):
+        self.beta = min(1.0, self.beta + frame_idx * (1.0 - self.beta) / beta_frames)
+        return
+
+    def sample(self, frame_idx, batch_size=20, beta_frames=1000):
+        self._beta_update(frame_idx, beta_frames)
+        if self.cnt == self.capacity:
+            prios = self.priorities
+        else:
+            prios = self.priorities[:self.pos]
+
+        probs = prios ** self.prob_alpha
+        probs /= probs.sum()
+
+        indices = np.random.choice(range(len(self.action_history)), batch_size, p=probs, replace=False)
+        state_samples = np.asarray([self.state_history[idx] for idx in indices])
+        next_state_samples = np.asarray([self.state_next_history[idx] for idx in indices])
+        action_samples = np.asarray([self.action_history[idx] for idx in indices])
+        reward_samples = np.asarray([self.rewards_history[idx] for idx in indices])
+        done_samples = np.asarray([self.done_history[idx] for idx in indices])
+
+        total = len(self.action_history)
+        weights = (total * probs[indices]) ** (-self.beta)
+        weights /= weights.max()
+        weights = np.array(weights, dtype=np.float32)
+
+        return state_samples, \
+               action_samples, reward_samples, next_state_samples, done_samples, indices, weights
+
+    def update_priorities(self, batch_indices, batch_priorities):
+        for idx, prio in zip(batch_indices, batch_priorities):
+            self.priorities[idx] = prio
+
+    def __len__(self):
+        return self.cnt
 
 
 def model_creator(num_actions=3, is_rnn=False, input_shape=(60, 60, 1)):
@@ -30,6 +107,8 @@ def model_creator(num_actions=3, is_rnn=False, input_shape=(60, 60, 1)):
 
 
 def heuristic_agent():
+
+    global pos
 
     def get_pos_player(observe):
         ids = np.where(np.sum(observe == [214, 92, 92], -1) == 3)
@@ -90,9 +169,11 @@ def heuristic_agent():
         state_next_history.append(state_next)
         state_history.append(state)
         done_history.append(done)
+        priorities.append(max(priorities) if priorities else 1.0)
 
         r_a, c_a = get_pos_player(observe)
         r_f, c_f = get_pos_flags(observe)
+    return
 
 
 def process_state(state, ratio=0.45):
@@ -120,6 +201,7 @@ def trainer(gamma=0.99,
             threshold_timestep=500,
             target_avg_reward=-4000
             ):
+    global action_history, state_history, state_next_history, rewards_history, done_history
     # Model used for selecting actions (principal)
     model = model_creator()
     # Then create the target model. This will periodically be copied from the principal network
@@ -129,18 +211,21 @@ def trainer(gamma=0.99,
     model_target.build((batch_size, resize_shape, resize_shape, 1))
 
     optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
-    loss_function = keras.losses.Huber()  # You can use the Huber loss function or the mean squared error
+    reduction = tf.keras.losses.Reduction.NONE if version == "2" else tf.losses.Reduction.NONE
+    loss_function = keras.losses.Huber(reduction=reduction)  # You can use the Huber loss function or the mean squared error
 
     running_reward = 0
     episode_count = 0
     episode_reward_history = []
+    static_update_after_actions = update_after_actions
 
     # how often to train your model - this allows you to speed up learning
-    # by not performing in every iteration learning. See also refernece paper
+    # by not performing in every iteration learning. See also reference paper
     # you can set this value to other values like 1 as well to learn every time
 
     epsilon = 1.
     running_rewards = list()
+    pb = PrioritizedBuffer(capacity=max_memory)
 
     for episode in range(max_episodes):
         state = process_state(np.asarray(env.reset()))
@@ -177,41 +262,43 @@ def trainer(gamma=0.99,
                 episode_reward += reward
 
             # Save action/states and other information in replay buffer
-            action_history.append(action)
-            state_history.append(state)
-            state_next_history.append(state_next)
-            rewards_history.append(reward)
-            done_history.append(done)
+            pb.push(state, action, reward, state_next, done)
+            # action_history.append(action)
+            # state_history.append(state)
+            # state_next_history.append(state_next)
+            # rewards_history.append(reward)
+            # done_history.append(done)
 
             state = state_next
 
             # Update every Xth frame to speed up (optional)
             # and if you have sufficient history
             if randomly_update_memory_after_actions:
-                update_after_actions = np.random.choice(np.arange(start=update_after_actions//2,
-                                                                  stop=update_after_actions+1,
-                                                                  step=1))
+                update_after_actions = np.random.choice(
+                    range(static_update_after_actions//2, static_update_after_actions+1))
             if timestep_count % update_after_actions == 0 and len(action_history) > batch_size:
                 #  Sample a set of batch_size memories from the history
-                state_history = np.asarray(state_history)
-                state_next_history = np.asarray(state_next_history)
-                rewards_history = np.asarray(rewards_history)
-                action_history = np.asarray(action_history)
-                done_history = np.asarray(done_history)
-
-                idx = np.random.choice(range(len(state_history)), batch_size, False)
-
-                state_sample = state_history[idx]
-                state_next_sample = state_next_history[idx]
-                rewards_sample = rewards_history[idx]
-                action_sample = action_history[idx]
-                done_sample = done_history[idx]
-
-                state_history = state_history.tolist()
-                state_next_history = state_next_history.tolist()
-                rewards_history = rewards_history.tolist()
-                action_history = action_history.tolist()
-                done_history = done_history.tolist()
+                # state_history = np.asarray(state_history)
+                # state_next_history = np.asarray(state_next_history)
+                # rewards_history = np.asarray(rewards_history)
+                # action_history = np.asarray(action_history)
+                # done_history = np.asarray(done_history)
+                #
+                # idx = np.random.choice(range(len(state_history)), batch_size, False)
+                #
+                # state_sample = state_history[idx]
+                # state_next_sample = state_next_history[idx]
+                # rewards_sample = rewards_history[idx]
+                # action_sample = action_history[idx]
+                # done_sample = done_history[idx]
+                #
+                # state_history = state_history.tolist()
+                # state_next_history = state_next_history.tolist()
+                # rewards_history = rewards_history.tolist()
+                # action_history = action_history.tolist()
+                # done_history = done_history.tolist()
+                state_sample, action_sample, rewards_sample, state_next_sample, done_sample, indices, weights = \
+                    pb.sample(timestep, batch_size)
 
                 # Create for the sample states the targets (r+gamma * max Q(...) )
                 Q_next_state = model_target.predict(state_next_sample)
@@ -233,6 +320,11 @@ def trainer(gamma=0.99,
                     Q_of_actions = tf.reduce_sum(tf.multiply(q_values, relevant_actions), axis=1)
                     # Calculate loss between principal network and target network
                     loss = loss_function(Q_targets, Q_of_actions)
+                    pb.update_priorities(indices, loss.numpy()+1e-5)
+                    try:
+                        loss = loss.mean()
+                    except:
+                        loss = tf.math.reduce_mean(loss)
 
                 # Nudge the weights of the trainable variables towards
                 grads = tape.gradient(loss, model.trainable_variables)
@@ -246,12 +338,12 @@ def trainer(gamma=0.99,
                 print(template.format(running_reward, episode_count, timestep_count, epsilon))
 
             # Don't let the memory grow beyond the limit
-            if len(rewards_history) > max_memory:
-                del rewards_history[:len(rewards_history)-max_memory]
-                del state_history[:len(state_history)-max_memory]
-                del state_next_history[:len(state_next_history)-max_memory]
-                del action_history[:len(action_history)-max_memory]
-                del done_history[:len(done_history)-max_memory]
+            # if len(rewards_history) > max_memory:
+            #     del rewards_history[:len(rewards_history)-max_memory]
+            #     del state_history[:len(state_history)-max_memory]
+            #     del state_next_history[:len(state_next_history)-max_memory]
+            #     del action_history[:len(action_history)-max_memory]
+            #     del done_history[:len(done_history)-max_memory]
             if done: break
         if not done:
             for i in range(len(rewards_history) - timestep_count, len(rewards_history)):
@@ -270,10 +362,12 @@ def trainer(gamma=0.99,
             break
         end = time.time()
         print("time per episode {:.4f} seconds".format(end - start))
+    return running_rewards
 
 
 if __name__ == "__main__":
-    if tf.__version__[0] == "1":
+    version = tf.__version__[0]
+    if version == "1":
         tf.compat.v1.enable_eager_execution()
     envname = "ALE/Skiing-v5"  # environment name
     env = gym.make(envname)
