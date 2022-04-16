@@ -91,12 +91,15 @@ class PrioritizedBuffer:
         return self.cnt
 
 
-def model_creator(num_actions=3, is_rnn=False, input_shape=(60, 60, 1)):
+def model_creator(num_actions=3, is_rnn=False):
     model = keras.Sequential()
-    model.add(keras.layers.Conv2D(32, (8, 8), strides=4, kernel_initializer="he_normal", activation="relu",
-                                  input_shape=input_shape))
-    model.add(keras.layers.Conv2D(64, (4, 4), strides=2, kernel_initializer="he_normal", activation="relu"))
-    model.add(keras.layers.Conv2D(64, (3, 3), strides=1, kernel_initializer="he_normal", activation="relu"))
+    model.add(keras.layers.Conv2D(32, (8, 8), strides=4, padding="same", kernel_initializer="he_normal", activation="relu",
+                                  ))
+    model.add(keras.layers.MaxPool2D((2, 2), strides=2))
+    model.add(keras.layers.Conv2D(64, (4, 4), strides=2, padding="same", kernel_initializer="he_normal", activation="relu"))
+    model.add(keras.layers.MaxPool2D((2, 2), strides=2))
+    model.add(keras.layers.Conv2D(64, (3, 3), strides=1, padding="same", kernel_initializer="he_normal", activation="relu"))
+    model.add(keras.layers.MaxPool2D((2, 2), strides=2))
     model.add(keras.layers.Flatten())
     if is_rnn:
         model.add(keras.layers.Lambda(lambda x: tf.expand_dims(x, -1)))
@@ -107,8 +110,6 @@ def model_creator(num_actions=3, is_rnn=False, input_shape=(60, 60, 1)):
 
 
 def heuristic_agent():
-
-    global pos
 
     def get_pos_player(observe):
         ids = np.where(np.sum(observe == [214, 92, 92], -1) == 3)
@@ -176,16 +177,17 @@ def heuristic_agent():
     return
 
 
-def process_state(state, ratio=0.45):
+def process_state(state, ratio=0.6):
     state = Image.fromarray(state[28:-35, 8:152, :]).convert('L')
     preprocessed_state = np.asarray(state)
     preprocessed_state = np.where(preprocessed_state >= 180, 236, preprocessed_state)
     preprocessed_state = Image.fromarray(preprocessed_state)
     preprocessed_state = preprocessed_state.resize(
-        (min(60, int(preprocessed_state.size[0] * ratio)), min(60, int(preprocessed_state.size[1] * ratio))), Image.LANCZOS)
+        (int(preprocessed_state.size[0] * ratio), int(preprocessed_state.size[1] * ratio)), Image.LANCZOS)
+    assert preprocessed_state.size[0] >= 80
     preprocessed_state = preprocessed_state.filter(ImageFilter.EDGE_ENHANCE_MORE)
     state = np.expand_dims(np.asarray(preprocessed_state), axis=-1)
-    return state
+    return state.astype("float32")
 
 
 def trainer(gamma=0.99,
@@ -207,8 +209,8 @@ def trainer(gamma=0.99,
     # Then create the target model. This will periodically be copied from the principal network
     model_target = model_creator()
 
-    model.build((batch_size, resize_shape, resize_shape, 1))
-    model_target.build((batch_size, resize_shape, resize_shape, 1))
+    model.build((batch_size, resize_shape[0], resize_shape[1], 1))
+    model_target.build((batch_size, resize_shape[0], resize_shape[1], 1))
 
     optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
     reduction = tf.keras.losses.Reduction.NONE if version == "2" else tf.losses.Reduction.NONE
@@ -369,9 +371,9 @@ if __name__ == "__main__":
     version = tf.__version__[0]
     if version == "1":
         tf.compat.v1.enable_eager_execution()
-    envname = "ALE/Skiing-v5"  # environment name
+    envname = "Skiing-v0"  # environment name
     env = gym.make(envname)
-    resize_shape = 60
+    resize_shape = (86, 88)
     play_times = 2
     for _ in range(play_times):
         heuristic_agent()
