@@ -5,8 +5,8 @@ import gym
 import time
 from PIL import Image, ImageFilter
 import warnings
-warnings.filterwarnings("ignore")
 
+warnings.filterwarnings("ignore")
 
 # Our Experience Replay memory
 action_history = []
@@ -30,7 +30,7 @@ class PrioritizedBuffer:
         if len(priorities) >= capacity:
             self.priorities = np.asarray(priorities[:capacity], dtype=np.float32)
         else:
-            self.priorities = np.asarray(priorities + [0 for _ in range(capacity-len(priorities))], dtype=np.float32)
+            self.priorities = np.asarray(priorities + [0 for _ in range(capacity - len(priorities))], dtype=np.float32)
         self.cnt = len(action_history)
         self.beta = beta
 
@@ -91,14 +91,17 @@ class PrioritizedBuffer:
         return self.cnt
 
 
-def model_creator(num_actions=3, is_rnn=False):
+def DQN(num_actions=3, is_rnn=False):
     model = keras.Sequential()
-    model.add(keras.layers.Conv2D(32, (8, 8), strides=4, padding="same", kernel_initializer="he_normal", activation="relu",
-                                  ))
+    model.add(
+        keras.layers.Conv2D(32, (8, 8), strides=4, padding="same", kernel_initializer="he_normal", activation="relu",
+                            ))
     model.add(keras.layers.MaxPool2D((2, 2), strides=2))
-    model.add(keras.layers.Conv2D(64, (4, 4), strides=2, padding="same", kernel_initializer="he_normal", activation="relu"))
+    model.add(
+        keras.layers.Conv2D(64, (4, 4), strides=2, padding="same", kernel_initializer="he_normal", activation="relu"))
     model.add(keras.layers.MaxPool2D((2, 2), strides=2))
-    model.add(keras.layers.Conv2D(64, (3, 3), strides=1, padding="same", kernel_initializer="he_normal", activation="relu"))
+    model.add(
+        keras.layers.Conv2D(64, (3, 3), strides=1, padding="same", kernel_initializer="he_normal", activation="relu"))
     model.add(keras.layers.MaxPool2D((2, 2), strides=2))
     model.add(keras.layers.Flatten())
     if is_rnn:
@@ -109,8 +112,53 @@ def model_creator(num_actions=3, is_rnn=False):
     return model
 
 
-def heuristic_agent():
+class Duel_DQN(keras.Model):
+    def __init__(self, num_actions=3, is_rnn=False):
+        super(Duel_DQN, self).__init__()
+        self.num_actions = num_actions
+        self.is_rnn = is_rnn
+        self.conv1 = keras.layers.Conv2D(32, (8, 8), strides=4, padding="same", kernel_initializer="he_normal",
+                                         activation="relu",
+                                         )
+        self.pooling1 = keras.layers.MaxPool2D((2, 2), strides=2)
+        self.conv2 = keras.layers.Conv2D(64, (4, 4), strides=2, padding="same", kernel_initializer="he_normal",
+                                          activation="relu"
+                                          )
+        self.pooling2 = keras.layers.MaxPool2D((2, 2), strides=2)
+        self.conv3 = keras.layers.Conv2D(64, (3, 3), strides=1, padding="same", kernel_initializer="he_normal",
+                                         activation="relu"
+                                         )
+        self.pooling3 = keras.layers.MaxPool2D((2, 2), strides=2)
+        self.flatten = keras.layers.Flatten()
+        if self.is_rnn:
+            self.Lambda = keras.layers.Lambda(lambda x: tf.expand_dims(x, -1))
+            self.lstm = keras.layers.LSTM(128, return_sequences=True, activation="relu")
+        self.fc1_action = keras.layers.Dense(512, activation="relu")
+        self.fc2_action = keras.layers.Dense(self.num_actions)
+        self.fc1_value = keras.layers.Dense(512, activation="relu")
+        self.fc2_value = keras.layers.Dense(1)
 
+    def call(self, x, training=True):
+        first_conv = self.conv1(x)
+        first_pooling = self.pooling1(first_conv)
+        second_conv = self.conv2(first_pooling)
+        second_pooling = self.pooling2(second_conv)
+        third_conv = self.conv3(second_pooling)
+        third_pooling = self.pooling3(third_conv)
+        output = self.flatten(third_pooling)
+        if self.is_rnn:
+            reshaped = self.Lambda(output)
+            output = self.lstm(reshaped)
+        action = self.fc1_action(output)
+        action = self.fc2_action(action)
+        value = self.fc1_value(output)
+        value = tf.broadcast_to(self.fc2_value(value), shape=(tf.shape(x)[0], self.num_actions))
+        Q = action + value - tf.broadcast_to(tf.expand_dims(tf.math.reduce_mean(action, 1), axis=1),
+                                             shape=(tf.shape(x)[0], self.num_actions))
+        return Q
+
+
+def heuristic_agent():
     def get_pos_player(observe):
         ids = np.where(np.sum(observe == [214, 92, 92], -1) == 3)
         return ids[0].mean(), ids[1].mean()
@@ -205,16 +253,17 @@ def trainer(gamma=0.99,
             ):
     global action_history, state_history, state_next_history, rewards_history, done_history
     # Model used for selecting actions (principal)
-    model = model_creator()
+    model = Duel_DQN()
     # Then create the target model. This will periodically be copied from the principal network
-    model_target = model_creator()
+    model_target = Duel_DQN()
 
     model.build((batch_size, resize_shape[0], resize_shape[1], 1))
     model_target.build((batch_size, resize_shape[0], resize_shape[1], 1))
 
     optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
     reduction = tf.keras.losses.Reduction.NONE if version == "2" else tf.losses.Reduction.NONE
-    loss_function = keras.losses.Huber(reduction=reduction)  # You can use the Huber loss function or the mean squared error
+    loss_function = keras.losses.Huber(
+        reduction=reduction)  # You can use the Huber loss function or the mean squared error
 
     running_reward = 0
     episode_count = 0
@@ -258,7 +307,7 @@ def trainer(gamma=0.99,
             state_next = process_state(state_next)
             if done:
                 # there should be a huge punishment due to not crossing the flags
-                for i in range(len(rewards_history)-timestep_count, len(rewards_history)):
+                for i in range(len(rewards_history) - timestep_count, len(rewards_history)):
                     rewards_history[i] += reward / timestep_count
             else:
                 episode_reward += reward
@@ -277,7 +326,7 @@ def trainer(gamma=0.99,
             # and if you have sufficient history
             if randomly_update_memory_after_actions:
                 update_after_actions = np.random.choice(
-                    range(static_update_after_actions//2, static_update_after_actions+1))
+                    range(static_update_after_actions // 2, static_update_after_actions + 1))
             if timestep_count % update_after_actions == 0 and len(action_history) > batch_size:
                 #  Sample a set of batch_size memories from the history
                 # state_history = np.asarray(state_history)
@@ -322,7 +371,7 @@ def trainer(gamma=0.99,
                     Q_of_actions = tf.reduce_sum(tf.multiply(q_values, relevant_actions), axis=1)
                     # Calculate loss between principal network and target network
                     loss = loss_function(Q_targets, Q_of_actions)
-                    pb.update_priorities(indices, loss.numpy()+1e-5)
+                    pb.update_priorities(indices, loss.numpy() + 1e-5)
                     try:
                         loss = loss.mean()
                     except:
