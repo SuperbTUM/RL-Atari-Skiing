@@ -316,8 +316,8 @@ def trainer(gamma=0.99,
             state_next = process_state(state_next)
             if done:
                 # there should be a huge punishment due to not crossing the flags
-                for i in range(len(rewards_history) - timestep_count, len(rewards_history)):
-                    rewards_history[i] += reward / timestep_count
+                for i in range(len(pb.rewards_history) - timestep_count, len(pb.rewards_history)):
+                    pb.rewards_history[i] += reward / timestep_count
             else:
                 episode_reward += reward
 
@@ -413,8 +413,8 @@ def trainer(gamma=0.99,
             #     del done_history[:len(done_history)-max_memory]
             if done: break
         if not done:
-            for i in range(len(rewards_history) - timestep_count, len(rewards_history)):
-                rewards_history[i] -= 10000 / timestep_count
+            for i in range(len(pb.rewards_history) - timestep_count, len(pb.rewards_history)):
+                pb.rewards_history[i] -= 10000 / timestep_count
 
         # reward of last n episodes
         episode_reward_history.append(episode_reward)
