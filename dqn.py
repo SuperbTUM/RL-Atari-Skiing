@@ -1,3 +1,4 @@
+from __future__ import print_function
 import tensorflow as tf
 import tensorflow.keras as keras
 import numpy as np
@@ -26,7 +27,12 @@ class PrioritizedBuffer:
         self.state_next_history = state_next_history[:min(capacity, len(state_next_history))]
         self.rewards_history = rewards_history[:min(capacity, len(rewards_history))]
         self.done_history = done_history[:min(capacity, len(done_history))]
-        self.pos = len(action_history)
+        assert len(self.action_history) <= capacity
+        assert len(self.state_history) <= capacity
+        assert len(self.state_next_history) <= capacity
+        assert len(self.rewards_history) <= capacity
+        assert len(self.done_history) <= capacity
+        self.pos = len(self.action_history)-1
         if len(priorities) >= capacity:
             self.priorities = np.asarray(priorities[:capacity], dtype=np.float32)
         else:
@@ -58,12 +64,9 @@ class PrioritizedBuffer:
         self.beta = min(1.0, self.beta + frame_idx * (1.0 - self.beta) / beta_frames)
         return
 
-    def sample(self, frame_idx, batch_size=20, beta_frames=1000):
+    def sample(self, frame_idx, batch_size=20, beta_frames=3000):
         self._beta_update(frame_idx, beta_frames)
-        if self.cnt == self.capacity:
-            prios = self.priorities
-        else:
-            prios = self.priorities[:self.pos]
+        prios = self.priorities[:min(self.capacity, len(self.action_history))]
 
         probs = prios ** self.prob_alpha
         probs /= probs.sum()
@@ -242,20 +245,26 @@ def trainer(gamma=0.99,
             batch_size=4,
             learning_rate=0.001,
             max_memory=3000,
-            target_update_every=1440,
-            max_steps_per_episode=1440,
+            target_update_every=600,
+            max_steps_per_episode=3600,
             max_episodes=1000,
             update_after_actions=4,
             randomly_update_memory_after_actions=True,
             last_n_reward=100,
             threshold_timestep=500,
-            target_avg_reward=-4000
+            target_avg_reward=-4000,
+            double_dqn=False,
+            dueling_dqn=False
             ):
     global action_history, state_history, state_next_history, rewards_history, done_history
     # Model used for selecting actions (principal)
-    model = Duel_DQN()
-    # Then create the target model. This will periodically be copied from the principal network
-    model_target = Duel_DQN()
+    if dueling_dqn:
+        model = Duel_DQN()
+        # Then create the target model. This will periodically be copied from the principal network
+        model_target = Duel_DQN()
+    else:
+        model = DQN()
+        model_target = DQN()
 
     model.build((batch_size, resize_shape[0], resize_shape[1], 1))
     model_target.build((batch_size, resize_shape[0], resize_shape[1], 1))
@@ -351,9 +360,16 @@ def trainer(gamma=0.99,
                 state_sample, action_sample, rewards_sample, state_next_sample, done_sample, indices, weights = \
                     pb.sample(timestep, batch_size)
 
-                # Create for the sample states the targets (r+gamma * max Q(...) )
-                Q_next_state = model_target.predict(state_next_sample)
-                Q_targets = rewards_sample + gamma * tf.reduce_max(Q_next_state, axis=-1)
+                if not double_dqn:
+                    # Create for the sample states the targets (r+gamma * max Q(...) )
+                    Q_next_state = model_target.predict(state_next_sample)
+                    Q_targets = rewards_sample + gamma * tf.reduce_max(Q_next_state, axis=-1)
+
+                else:
+                    max_Q_index = tf.argmax(model.predict(state_next_sample), axis=1)
+                    Q_next_target = torch_gather(model_target.predict(state_next_sample),
+                                                 tf.expand_dims(max_Q_index, axis=1), 1)
+                    Q_targets = rewards_sample + gamma * tf.squeeze(Q_next_target)
 
                 # If the episode was ended (done_sample value is 1)
                 # you can penalize the Q value of the target by some value `penalty`
@@ -381,8 +397,8 @@ def trainer(gamma=0.99,
                 grads = tape.gradient(loss, model.trainable_variables)
                 optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
-            if timestep_count % target_update_every == 0:
-                # update the the target network with new weights
+            if timestep_count % target_update_every == 0 or done:
+                # update the target network with new weights
                 model_target.set_weights(model.get_weights())
                 # Log details
                 template = "running reward: {:.2f} at episode {}, frame count {}, epsilon {}"
@@ -416,15 +432,35 @@ def trainer(gamma=0.99,
     return running_rewards
 
 
+def torch_gather(x, indices, gather_axis):
+
+    # create a tensor containing indices of each element
+    all_indices = tf.where(tf.fill(indices.shape, True))
+    gather_locations = tf.reshape(indices, [indices.shape.num_elements()])
+
+    # splice in our pytorch style index at the correct axis
+    gather_indices = []
+    for axis in range(len(indices.shape)):
+        if axis == gather_axis:
+            gather_indices.append(gather_locations)
+        else:
+            gather_indices.append(all_indices[:, axis])
+
+    gather_indices = tf.stack(gather_indices, axis=-1)
+    gathered = tf.gather_nd(x, gather_indices)
+    reshaped = tf.reshape(gathered, indices.shape)
+    return reshaped
+
+
 if __name__ == "__main__":
     version = tf.__version__[0]
     if version == "1":
         tf.compat.v1.enable_eager_execution()
-    envname = "Skiing-v0"  # environment name
+    envname = "ALE/Skiing-v5"  # environment name
     env = gym.make(envname)
     resize_shape = (86, 88)
-    play_times = 2
+    play_times = 3
     for _ in range(play_times):
         heuristic_agent()
 
-    trainer()
+    trainer(double_dqn=True)
