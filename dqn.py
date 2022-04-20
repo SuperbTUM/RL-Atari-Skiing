@@ -87,8 +87,10 @@ class PrioritizedBuffer:
                action_samples, reward_samples, next_state_samples, done_samples, indices, weights
 
     def update_priorities(self, batch_indices, batch_priorities):
-        for idx, prio in zip(batch_indices, batch_priorities):
-            self.priorities[idx] = prio
+        # for idx, prio in zip(batch_indices, batch_priorities):
+        #     self.priorities[idx] = prio
+        for idx in batch_indices:
+            self.priorities[idx] = batch_priorities
 
     def __len__(self):
         return self.cnt
@@ -316,8 +318,8 @@ def trainer(gamma=0.99,
             state_next = process_state(state_next)
             if done:
                 # there should be a huge punishment due to not crossing the flags
-                for i in range(len(rewards_history) - timestep_count, len(rewards_history)):
-                    rewards_history[i] += reward / timestep_count
+                for i in range(len(pb.rewards_history) - timestep_count, len(pb.rewards_history)):
+                    pb.rewards_history[i] += reward / timestep_count
             else:
                 episode_reward += reward
 
@@ -413,8 +415,8 @@ def trainer(gamma=0.99,
             #     del done_history[:len(done_history)-max_memory]
             if done: break
         if not done:
-            for i in range(len(rewards_history) - timestep_count, len(rewards_history)):
-                rewards_history[i] -= 10000 / timestep_count
+            for i in range(len(pb.rewards_history) - timestep_count, len(pb.rewards_history)):
+                pb.rewards_history[i] -= 10000 / timestep_count
 
         # reward of last n episodes
         episode_reward_history.append(episode_reward)
