@@ -87,8 +87,10 @@ class PrioritizedBuffer:
                action_samples, reward_samples, next_state_samples, done_samples, indices, weights
 
     def update_priorities(self, batch_indices, batch_priorities):
-        for idx, prio in zip(batch_indices, batch_priorities):
-            self.priorities[idx] = prio
+        # for idx, prio in zip(batch_indices, batch_priorities):
+        #     self.priorities[idx] = prio
+        for idx in batch_indices:
+            self.priorities[idx] = batch_priorities
 
     def __len__(self):
         return self.cnt
