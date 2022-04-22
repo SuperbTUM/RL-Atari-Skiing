@@ -3,7 +3,9 @@ import numpy as np
 import gym
 import time
 from PIL import Image, ImageFilter
+import matplotlib.pyplot as plt
 import warnings
+import logging
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 warnings.filterwarnings("ignore")
@@ -18,6 +20,10 @@ state_next_history = []
 rewards_history = []
 done_history = []
 priorities = []
+log_path = "skiing.log"
+logging.basicConfig(filename=log_path, level=logging.INFO,
+                    filemode='w', format='%(levelname)s:%(asctime)s:%(message)s', datefmt='%Y-%d-%m %H:%M:%S')
+logger = logging.getLogger(__name__)
 
 
 class PrioritizedBuffer:
@@ -34,7 +40,6 @@ class PrioritizedBuffer:
         assert len(self.state_next_history) <= capacity
         assert len(self.rewards_history) <= capacity
         assert len(self.done_history) <= capacity
-        self.pos = len(self.action_history)-1
         if len(priorities) >= capacity:
             self.priorities = np.asarray(priorities[:capacity], dtype=np.float32)
         else:
@@ -44,6 +49,7 @@ class PrioritizedBuffer:
 
     def push(self, state, action, reward, next_state, done):
         max_prio = np.max(self.priorities) if self.state_history else 1.0
+        pos = np.argmin(self.priorities) if self.state_history else 0
 
         if self.cnt < self.capacity:
             self.action_history.append(action)
@@ -53,14 +59,13 @@ class PrioritizedBuffer:
             self.done_history.append(done)
             self.cnt += 1
         else:
-            self.action_history[self.pos] = action
-            self.state_history[self.pos] = state
-            self.state_next_history[self.pos] = next_state
-            self.rewards_history[self.pos] = reward
-            self.done_history[self.pos] = done
+            self.action_history[pos] = action
+            self.state_history[pos] = state
+            self.state_next_history[pos] = next_state
+            self.rewards_history[pos] = reward
+            self.done_history[pos] = done
 
-        self.priorities[self.pos] = max_prio
-        self.pos = (self.pos + 1) % self.capacity
+        self.priorities[pos] = max_prio
 
     def _beta_update(self, frame_idx, beta_frames=1000):
         self.beta = min(1.0, self.beta + frame_idx * (1.0 - self.beta) / beta_frames)
@@ -243,11 +248,11 @@ def process_state(state, ratio=0.6):
     return state.astype("float32")
 
 
-def trainer(gamma=0.9,
+def trainer(gamma=0.1,
             batch_size=4,
             learning_rate=0.001,
             max_memory=3600,
-            target_update_every=600,
+            target_update_every=100,
             max_steps_per_episode=3600,
             max_episodes=1000,
             update_after_actions=4,
@@ -279,22 +284,22 @@ def trainer(gamma=0.9,
     episode_count = 0
     episode_reward_history = []
     static_update_after_actions = update_after_actions
+    no_improvement = 0
 
     # how often to train your model - this allows you to speed up learning
     # by not performing in every iteration learning. See also reference paper
     # you can set this value to other values like 1 as well to learn every time
 
-    epsilon = 1.
+    epsilon = .3
     running_rewards = list()
     pb = PrioritizedBuffer(capacity=max_memory)
 
     for episode in range(max_episodes):
-        print("epsilon", epsilon)
+        logger.info("epsilon is " + str(epsilon) + ", episode is " + str(episode))
         state = process_state(np.asarray(env.reset()))
         episode_reward = 0
         timestep_count = 0
         done = False
-        print("episode", episode)
         start = time.time()
         for timestep in range(1, max_steps_per_episode):
             timestep_count += 1
@@ -314,9 +319,10 @@ def trainer(gamma=0.9,
             state_next, reward, done, _ = env.step(action)
             state_next = process_state(state_next)
             if done:
-                # there should be a huge punishment due to not crossing the flags
-                for i in range(len(pb.rewards_history) - timestep_count, len(pb.rewards_history)):
-                    pb.rewards_history[i] += reward / timestep_count
+                # # there should be a huge punishment due to not crossing the flags
+                # for i in range(len(pb.rewards_history) - timestep_count, len(pb.rewards_history)):
+                #     pb.rewards_history[i] += reward / timestep_count
+                pass
             else:
                 episode_reward += reward
 
@@ -397,13 +403,12 @@ def trainer(gamma=0.9,
                 grads = tape.gradient(loss, model.trainable_variables)
                 optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
-            if timestep_count % target_update_every == 0 or done:
+            if timestep_count % target_update_every == 0 or done or timestep_count + 1 == max_steps_per_episode:
                 # update the target network with new weights
                 model_target.set_weights(model.get_weights())
                 # Log details
                 template = "running reward: {:.2f} at episode {}, frame count {}, epsilon {}"
-                print(template.format(running_reward, episode_count, timestep_count, epsilon))
-
+                logger.info(template.format(running_reward, episode_count, timestep_count, epsilon))
             # Don't let the memory grow beyond the limit
             # if len(rewards_history) > max_memory:
             #     del rewards_history[:len(rewards_history)-max_memory]
@@ -413,13 +418,21 @@ def trainer(gamma=0.9,
             #     del done_history[:len(done_history)-max_memory]
             if done: break
         if not done:
-            for i in range(len(pb.rewards_history) - timestep_count, len(pb.rewards_history)):
-                pb.rewards_history[i] -= 10000 / timestep_count
+            # for i in range(len(pb.rewards_history) - timestep_count, len(pb.rewards_history)):
+            #     pb.rewards_history[i] -= 10000 / timestep_count
+            pass
 
         # reward of last n episodes
         episode_reward_history.append(episode_reward)
         if len(episode_reward_history) > last_n_reward: del episode_reward_history[:1]
         running_reward = np.mean(episode_reward_history)
+        # early stopping
+        if running_rewards and running_rewards[-1] > running_reward:
+            no_improvement += 1
+            if no_improvement >= 3:
+                break
+        else:
+            no_improvement = 0
         running_rewards.append(running_reward)
         episode_count += 1
         # If you want to stop your training once you achieve the reward you want you can
@@ -427,9 +440,18 @@ def trainer(gamma=0.9,
         # of episodes.
         if running_reward > target_avg_reward:
             break
+
         end = time.time()
-        print("time per episode {:.4f} seconds".format(end - start))
+        logger.info("time per episode {:.4f} seconds".format(end - start))
     return running_rewards
+
+
+def plot_rewards(running_rewards):
+    plt.figure()
+    plt.plot(range(len(running_rewards)), running_rewards, linewidth=2)
+    plt.ylabel("average running rewards")
+    plt.imshow()
+    plt.show()
 
 
 def torch_gather(x, indices, gather_axis):
@@ -459,8 +481,9 @@ if __name__ == "__main__":
     envname = "Skiing-v0"  # environment name
     env = gym.make(envname)
     resize_shape = (86, 88)
-    play_times = 3
+    play_times = 5
     for _ in range(play_times):
         heuristic_agent()
 
-    trainer(double_dqn=False, dueling_dqn=True)
+    running_rewards = trainer(double_dqn=True, dueling_dqn=True)
+    plot_rewards(running_rewards)
