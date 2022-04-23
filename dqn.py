@@ -1,18 +1,12 @@
 from __future__ import print_function
-import numpy as np
 import gym
 import time
-from PIL import Image, ImageFilter
 import matplotlib.pyplot as plt
 import warnings
 import logging
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+from utils import *
+from models import *
 warnings.filterwarnings("ignore")
-import tensorflow as tf
-import tensorflow.keras as keras
-tf.get_logger().setLevel('ERROR')
-
 # Our Experience Replay memory
 action_history = []
 state_history = []
@@ -101,73 +95,6 @@ class PrioritizedBuffer:
         return self.cnt
 
 
-def DQN(num_actions=3, is_rnn=False):
-    model = keras.Sequential()
-    model.add(
-        keras.layers.Conv2D(32, (8, 8), strides=4, padding="same", kernel_initializer="he_normal", activation="relu",
-                            ))
-    model.add(keras.layers.MaxPool2D((2, 2), strides=2))
-    model.add(
-        keras.layers.Conv2D(64, (4, 4), strides=2, padding="same", kernel_initializer="he_normal", activation="relu"))
-    model.add(keras.layers.MaxPool2D((2, 2), strides=2))
-    model.add(
-        keras.layers.Conv2D(64, (3, 3), strides=1, padding="same", kernel_initializer="he_normal", activation="relu"))
-    model.add(keras.layers.MaxPool2D((2, 2), strides=2))
-    model.add(keras.layers.Flatten())
-    if is_rnn:
-        model.add(keras.layers.Lambda(lambda x: tf.expand_dims(x, -1)))
-        model.add(keras.layers.LSTM(128, return_sequences=True, activation="relu"))
-    model.add(keras.layers.Dense(512, activation="relu"))
-    model.add(keras.layers.Dense(num_actions))
-    return model
-
-
-class Duel_DQN(keras.Model):
-    def __init__(self, num_actions=3, is_rnn=False):
-        super(Duel_DQN, self).__init__()
-        self.num_actions = num_actions
-        self.is_rnn = is_rnn
-        self.conv1 = keras.layers.Conv2D(32, (8, 8), strides=4, padding="same", kernel_initializer="he_normal",
-                                         activation="relu",
-                                         )
-        self.pooling1 = keras.layers.MaxPool2D((2, 2), strides=2)
-        self.conv2 = keras.layers.Conv2D(64, (4, 4), strides=2, padding="same", kernel_initializer="he_normal",
-                                          activation="relu"
-                                          )
-        self.pooling2 = keras.layers.MaxPool2D((2, 2), strides=2)
-        self.conv3 = keras.layers.Conv2D(64, (3, 3), strides=1, padding="same", kernel_initializer="he_normal",
-                                         activation="relu"
-                                         )
-        self.pooling3 = keras.layers.MaxPool2D((2, 2), strides=2)
-        self.flatten = keras.layers.Flatten()
-        if self.is_rnn:
-            self.Lambda = keras.layers.Lambda(lambda x: tf.expand_dims(x, -1))
-            self.lstm = keras.layers.LSTM(128, activation="relu")
-        self.fc1_action = keras.layers.Dense(512, activation="relu")
-        self.fc2_action = keras.layers.Dense(self.num_actions)
-        self.fc1_value = keras.layers.Dense(512, activation="relu")
-        self.fc2_value = keras.layers.Dense(1)
-
-    def call(self, x, training=True):
-        first_conv = self.conv1(x)
-        first_pooling = self.pooling1(first_conv)
-        second_conv = self.conv2(first_pooling)
-        second_pooling = self.pooling2(second_conv)
-        third_conv = self.conv3(second_pooling)
-        third_pooling = self.pooling3(third_conv)
-        output = self.flatten(third_pooling)
-        if self.is_rnn:
-            reshaped = self.Lambda(output)
-            output = self.lstm(reshaped)
-        action = self.fc1_action(output)
-        action = self.fc2_action(action)
-        value = self.fc1_value(output)
-        value = tf.broadcast_to(self.fc2_value(value), shape=(x.shape[0], self.num_actions))
-        Q = action + value - tf.broadcast_to(tf.expand_dims(tf.math.reduce_mean(action, 1), axis=1),
-                                             shape=(tf.shape(x)[0], self.num_actions))
-        return Q
-
-
 def heuristic_agent():
     def get_pos_player(observe):
         ids = np.where(np.sum(observe == [214, 92, 92], -1) == 3)
@@ -235,20 +162,7 @@ def heuristic_agent():
     return
 
 
-def process_state(state, ratio=0.6):
-    state = Image.fromarray(state[28:-35, 8:152, :]).convert('L')
-    preprocessed_state = np.asarray(state)
-    preprocessed_state = np.where(preprocessed_state >= 180, 236, preprocessed_state)
-    preprocessed_state = Image.fromarray(preprocessed_state)
-    preprocessed_state = preprocessed_state.resize(
-        (int(preprocessed_state.size[0] * ratio), int(preprocessed_state.size[1] * ratio)), Image.LANCZOS)
-    assert preprocessed_state.size[0] >= 80
-    preprocessed_state = preprocessed_state.filter(ImageFilter.EDGE_ENHANCE_MORE)
-    state = np.expand_dims(np.asarray(preprocessed_state), axis=-1)
-    return state.astype("float32")
-
-
-def trainer(gamma=0.1,
+def trainer(gamma=0.9,
             batch_size=4,
             learning_rate=0.001,
             max_memory=3600,

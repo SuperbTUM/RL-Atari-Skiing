@@ -1,56 +1,54 @@
 import cv2
-import numpy as np
+import gym
+from utils import *
 
 
 class FlowEnv(object):
     """ Environment that expands an image environment with motion flow. """
 
-    def __init__(self, env, verbose=False):
+    def __init__(self, env):
         self.env = env
         self.previousState = np.zeros((250, 160, 3))
-        self.verbose = verbose
 
     def reset(self):
-        observation = self.env.reset()
+        observation = cv2.cvtColor(self.env.reset(), cv2.COLOR_BGR2GRAY)
         out = self.combineImages(observation, observation)
         self.previousState = observation
         return out
 
     def step(self, action):
         new_observation, reward, game_over, info = self.env.step(action)
+        new_observation = cv2.cvtColor(new_observation, cv2.COLOR_BGR2GRAY)
         merged = self.combineImages(self.previousState, new_observation)
         self.previousState = new_observation
         return merged, reward, game_over, info
 
     def combineImages(self, previousState, currentState):
-        pb, pg, pr = cv2.split(previousState)
-        cb, cg, cr = cv2.split(currentState)
 
-        shape = cb.shape + (2,)
-        b = np.zeros(shape, dtype=cb.dtype)
-        g = np.zeros(shape, dtype=cb.dtype)
-        r = np.zeros(shape, dtype=cb.dtype)
+        shape = currentState.shape[0:2]
+        flow = np.ones(shape, dtype=currentState.dtype) * 255
 
-        b = cv2.calcOpticalFlowFarneback(pb, cb, b, 0.5, 1, 5, 5, 5, 1.1, 0)
-        g = cv2.calcOpticalFlowFarneback(pg, cg, g, 0.5, 1, 5, 5, 5, 1.1, 0)
-        r = cv2.calcOpticalFlowFarneback(pr, cr, r, 0.5, 1, 5, 5, 5, 1.1, 0)
+        opticalflow = cv2.calcOpticalFlowFarneback(previousState, currentState, None,
+                                                   0.5, 3, 15, 3, 5, 1.2, 0)
 
-        b1, b2 = cv2.split(b)
-        g1, g2 = cv2.split(g)
-        r1, r2 = cv2.split(r)
+        mag, ang = cv2.cartToPolar(opticalflow[..., 0], opticalflow[..., 1])
+        ang = ang * 90 / np.pi
+        mag = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
 
-        merged = cv2.merge((b1, g1, r1,
-                            b2, g2, r2,
-                            cb.astype('float32') / 255,
-                            cg.astype('float32') / 255,
-                            cr.astype('float32') / 255))
-
-        if self.verbose:
-            cv2.imshow("ax1", merged[:, :, :3])
-            cv2.imshow("ax2", merged[:, :, 3:6])
-            cv2.imshow("img", merged[:, :, 6:])
-            cv2.waitKey(1)
+        merged = cv2.cvtColor(cv2.merge((ang.astype(currentState.dtype),
+                              flow,
+                              mag.astype(currentState.dtype))), cv2.COLOR_HSV2BGR)
+        merged = cv2.merge((merged, currentState))
         return merged
 
     def __getattr__(self, name):
         return getattr(self.env, name)
+
+
+if __name__ == "__main__":
+    env = gym.make("Skiing-v0")
+    opticalflow = FlowEnv(env)
+    out = opticalflow.reset()
+    for _ in range(10):
+        merged, reward, gameover, info = opticalflow.step(0)
+
