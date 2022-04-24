@@ -179,9 +179,9 @@ def trainer(gamma=0.9,
     global action_history, state_history, state_next_history, rewards_history, done_history
     # Model used for selecting actions (principal)
     if dueling_dqn:
-        model = Duel_DQN(is_rnn=True)
+        model = ResDQN(is_dueling=True, is_rnn=True)
         # Then create the target model. This will periodically be copied from the principal network
-        model_target = Duel_DQN(is_rnn=True)
+        model_target = ResDQN(is_dueling=True, is_rnn=True)
     else:
         model = DQN(is_rnn=True)
         model_target = DQN(is_rnn=True)

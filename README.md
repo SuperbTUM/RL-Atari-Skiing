@@ -1,8 +1,10 @@
 ## Introduction
 
-This is the repository of Atari skiing with deep reinforcement learning. We will try to optimize on deep Q learning, double DQN and dueling DQN. The following are some initial proposals.
+Atari Skiing is a classical Atari game. Developing an AI player is difficult as the reward is only returned at the end of the game. Given the DQN as the baseline, we will try to implement some optimizations and see if there is any improvement. Current methodologies include:
 
-- Import expert replay data from heuristic agent. The agent will always direct the player to the mid place between the flags (checkpoints).
-- Distribute penalty of uncrossed checkpoints to previous rewards
-- Hyper-parameter tuning: learning rate decay, epsilon decay, etc.
+- Adding heuristic data as initialization of replay buffer
+- Implementing Double DQN and Dueling DQN
+- Using prioritized replay buffer with trick
+- Implementing residual DQN
+- Implementing unrolled LSTM (DRQN)
 

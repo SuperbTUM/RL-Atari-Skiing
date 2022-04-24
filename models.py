@@ -34,20 +34,19 @@ class ResDQN(keras.Model):
                                          activation="relu",
                                          )
         self.pooling1 = keras.layers.MaxPool2D((2, 2), strides=2)
-        self.resconv1 = keras.layers.Conv2D(32, (3, 3), strides=1, padding="same", kernel_initializer="he_normal",
+        self.resconv1 = keras.layers.Conv2D(64, (3, 3), strides=1, padding="same", kernel_initializer="he_normal",
                                             activation="relu",
                                             )
-        self.resconv2 = keras.layers.Conv2D(32, (3, 3), strides=1, padding="same", kernel_initializer="he_normal")
+        self.resconv2 = keras.layers.Conv2D(64, (3, 3), strides=1, padding="same", kernel_initializer="he_normal")
         self.pooling2 = keras.layers.MaxPool2D((2, 2), strides=2)
-        self.resconv3 = keras.layers.Conv2D(32, (3, 3), strides=1, padding="same", kernel_initializer="he_normal",
+        self.resconv3 = keras.layers.Conv2D(64, (3, 3), strides=1, padding="same", kernel_initializer="he_normal",
                                             activation="relu",
                                             )
-        self.resconv4 = keras.layers.Conv2D(32, (3, 3), strides=1, padding="same", kernel_initializer="he_normal")
+        self.resconv4 = keras.layers.Conv2D(64, (3, 3), strides=1, padding="same", kernel_initializer="he_normal")
         self.pooling3 = keras.layers.MaxPool2D((2, 2), strides=2)
         self.flatten = keras.layers.Flatten()
         if is_rnn:
-            self.Lambda = keras.layers.Lambda(lambda x: tf.expand_dims(x, -1))
-            self.lstm = keras.layers.LSTM(128, activation="relu")
+            self.lstm = keras.layers.LSTMCell(128, activation="relu")
         self.fc1 = keras.layers.Dense(512, activation="relu")
         self.fc2 = keras.layers.Dense(num_actions)
         if is_dueling:
@@ -57,22 +56,33 @@ class ResDQN(keras.Model):
         self.is_dueling = is_dueling
         self.num_actions = num_actions
 
+    def get_initial_state(self, batch_size=4):
+        return self.lstm.get_initial_state(batch_size=batch_size, dtype=np.float32)
+
     def call(self, x, training=True):
+        initial_state = self.get_initial_state()
         x = self.conv1(x)
         x = self.pooling1(x)
         original = x
         x = self.resconv1(x)
         x = self.resconv2(x)
-        x += original
+        x = tf.concat((x, original), axis=-1)
         x = self.pooling2(x)
         original = x
         x = self.resconv3(x)
         x = self.resconv4(x)
-        x += original
+        x = tf.concat((x, original), axis=-1)
         x = self.pooling3(x)
         x = self.flatten(x)
         if self.is_rnn:
-            x = self.lstm(self.Lambda(x))
+            outputs = tf.unstack(tf.expand_dims(x, axis=1))  # list of (1, 256)
+            core_outputs = list()
+            for output in outputs:
+                core_output, core_state = self.lstm(output, initial_state)
+                core_outputs.append(core_output)
+                initial_state = core_state
+
+            x = tf.compat.v1.layers.flatten(tf.stack(core_outputs))  # (4, 128 * 4)?
         action = self.fc2(self.fc1(x))
         if self.is_dueling:
             value = self.value_approx2(self.value_approx1(x))
@@ -146,13 +156,13 @@ class Duel_DQN_Unrolled(keras.Model):
                                          )
         self.pooling3 = keras.layers.MaxPool2D((2, 2), strides=2)
         self.flatten = keras.layers.Flatten()
-        self.lstm = keras.layers.LSTMCell(128, activation="relu")
+        self.lstm = keras.layers.LSTMCell(256, activation="relu")
         self.fc1_action = keras.layers.Dense(512, activation="relu")
         self.fc2_action = keras.layers.Dense(self.num_actions)
         self.fc1_value = keras.layers.Dense(512, activation="relu")
         self.fc2_value = keras.layers.Dense(1)
 
-    def get_initial_state(self, batch_size=1):
+    def get_initial_state(self, batch_size=4):
         return self.lstm.get_initial_state(batch_size=batch_size, dtype=np.float32)
 
     def call(self, x, training=True):
@@ -171,7 +181,7 @@ class Duel_DQN_Unrolled(keras.Model):
             core_outputs.append(core_output)
             initial_state = core_state
 
-        core_output = tf.squeeze(tf.stack(core_outputs), axis=1)  # (4, 1, 128)
+        core_output = tf.compat.v1.layers.flatten(tf.stack(core_outputs))  # (4, 128 * 4)?
         action = self.fc1_action(core_output)
         action = self.fc2_action(action)
         value = self.fc1_value(core_output)
