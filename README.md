@@ -8,3 +8,7 @@ Atari Skiing is a classical Atari game. Developing an AI player is difficult as 
 - Implementing residual DQN
 - Implementing unrolled LSTM (DRQN)
 
+## Prerequisites
+
+numpy <= 1.19.5
+

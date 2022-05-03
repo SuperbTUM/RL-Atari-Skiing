@@ -166,10 +166,10 @@ def invertible_value_rescale(Q):
     return tf.math.sign(Q) * (tf.math.sqrt(tf.math.abs(Q) + 1) - 1) + 0.01 * Q
 
 
-def trainer(gamma=0.99,
+def trainer(gamma=0.995,
             batch_size=4,
             learning_rate=0.001,
-            max_memory=7200,
+            max_memory=10800,
             target_update_every=100,
             max_steps_per_episode=3600,
             max_episodes=1000,
@@ -232,7 +232,9 @@ def trainer(gamma=0.99,
                 action_vals = model(state_t, training=False)
                 # Choose the best action
                 action = tf.argmax(action_vals[0]).numpy()
-            epsilon = max(0.01, epsilon * 0.995)
+            # epsilon = max(0.01, epsilon * 0.995)
+            alpha = ((timestep % 128) - 1) / 127
+            epsilon = 0.1 ** (alpha + 3 * (1 - alpha))
             # follow selected action
             state_next, reward, done, _ = env.step(action)
             state_next = process_state(state_next)
