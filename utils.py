@@ -3,6 +3,7 @@ import numpy as np
 
 
 def process_state(state, ratio=0.6):
+    print(state.shape)
     state = Image.fromarray(state[28:-35, 8:152, :]).convert('L')
     preprocessed_state = np.asarray(state)
     preprocessed_state = np.where(preprocessed_state >= 180, 236, preprocessed_state)

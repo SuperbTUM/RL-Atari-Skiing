@@ -4,6 +4,8 @@ import time
 import matplotlib.pyplot as plt
 import warnings
 import logging
+
+from optical_flow import FlowEnv
 from utils import *
 from models import *
 warnings.filterwarnings("ignore")
@@ -121,6 +123,7 @@ def heuristic_agent():
         return min_idx
 
     observe = env.reset()
+    env_flow.reset()
     step = 0
     done = False
     # states
@@ -147,13 +150,14 @@ def heuristic_agent():
                 act = 0
 
         observe, reward, done, _ = env.step(act)
-        state_next = process_state(observe)
-        state = process_state(observe_old)
+        observe_flow, _, _, _ = env_flow.step(act)
+        state_flow = observe_flow
+        state_next_flow = observe_flow
         if not done:
             action_history.append(act)
             rewards_history.append(reward)
-            state_next_history.append(state_next)
-            state_history.append(state)
+            state_next_history.append(state_next_flow)
+            state_history.append(state_flow)
             done_history.append(done)
             priorities.append(max(priorities) if priorities else 1.0)
 
@@ -190,8 +194,8 @@ def trainer(gamma=0.995,
         model = DQN(is_rnn=True)
         model_target = DQN(is_rnn=True)
 
-    model.build((batch_size, resize_shape[0], resize_shape[1], 1))
-    model_target.build((batch_size, resize_shape[0], resize_shape[1], 1))
+    model.build((batch_size, resize_shape[0], resize_shape[1], resize_shape[2]))
+    model_target.build((batch_size, resize_shape[0], resize_shape[1], resize_shape[2]))
 
     optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
     reduction = tf.keras.losses.Reduction.NONE if version == "2" else tf.losses.Reduction.NONE
@@ -214,7 +218,7 @@ def trainer(gamma=0.995,
 
     for episode in range(max_episodes):
         logger.info("epsilon is " + str(epsilon) + ", episode is " + str(episode))
-        state = process_state(np.asarray(env.reset()))
+        state = np.asarray(env_flow.reset())
         episode_reward = 0
         timestep_count = 0
         done = False
@@ -236,8 +240,8 @@ def trainer(gamma=0.995,
             alpha = ((timestep % 128) - 1) / 127
             epsilon = 0.1 ** (alpha + 3 * (1 - alpha))
             # follow selected action
-            state_next, reward, done, _ = env.step(action)
-            state_next = process_state(state_next)
+            state_next, reward, done, _ = env_flow.step(action)
+            state_next = np.asarray(state_next)
             if done:
                 # # there should be a huge punishment due to not crossing the flags
                 # for i in range(len(pb.rewards_history) - timestep_count, len(pb.rewards_history)):
@@ -400,10 +404,11 @@ if __name__ == "__main__":
         tf.compat.v1.enable_eager_execution()
     envname = "Skiing-v0"  # environment name
     env = gym.make(envname)
-    resize_shape = (86, 88)
-    play_times = 5
-    for _ in range(play_times):
-        heuristic_agent()
+    env_flow = FlowEnv(env)
+    resize_shape = (210, 160, 4)
+    # play_times = 5
+    # for _ in range(play_times):
+    #     heuristic_agent()
 
     running_rewards = trainer(double_dqn=True, dueling_dqn=True)
     plot_rewards(running_rewards)

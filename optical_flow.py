@@ -51,4 +51,5 @@ if __name__ == "__main__":
     out = opticalflow.reset()
     for _ in range(10):
         merged, reward, gameover, info = opticalflow.step(0)
+        print(merged.shape)
 
