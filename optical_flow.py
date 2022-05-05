@@ -21,7 +21,7 @@ class FlowEnv(object):
         new_observation = cv2.cvtColor(new_observation, cv2.COLOR_BGR2GRAY)
         merged = self.combineImages(self.previousState, new_observation)
         self.previousState = new_observation
-        return merged, reward, game_over, info
+        return merged.astype(np.float32), reward, game_over, info
 
     def combineImages(self, previousState, currentState):
 

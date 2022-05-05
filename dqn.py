@@ -265,7 +265,7 @@ def trainer(gamma=0.995,
             if randomly_update_memory_after_actions:
                 update_after_actions = np.random.choice(
                     range(static_update_after_actions // 2, static_update_after_actions + 1))
-            if timestep_count % update_after_actions == 0 and len(action_history) > batch_size:
+            if timestep_count % update_after_actions == 0 and len(pb.action_history) > batch_size:
                 #  Sample a set of batch_size memories from the history
                 # state_history = np.asarray(state_history)
                 # state_next_history = np.asarray(state_next_history)
