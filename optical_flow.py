@@ -1,5 +1,7 @@
 import cv2
 import gym
+from matplotlib import pyplot as plt
+
 from utils import *
 
 
@@ -20,6 +22,9 @@ class FlowEnv(object):
         new_observation, reward, game_over, info = self.env.step(action)
         new_observation = cv2.cvtColor(new_observation, cv2.COLOR_BGR2GRAY)
         merged = self.combineImages(self.previousState, new_observation)
+        merged = merged / 255.0
+        # plt.imshow(merged)
+        # plt.show()
         self.previousState = new_observation
         return merged.astype(np.float32), reward, game_over, info
 

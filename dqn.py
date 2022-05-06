@@ -92,8 +92,8 @@ class PrioritizedBuffer:
     def update_priorities(self, batch_indices, batch_priorities):
         for idx, prio in zip(batch_indices, batch_priorities):
             self.priorities[idx] = prio
-            print("prio:", prio)
-            print(np.isnan(self.priorities).any())
+            # print("prio:", prio)
+            # print(np.isnan(self.priorities).any())
 
     def __len__(self):
         return self.cnt
@@ -315,19 +315,23 @@ def trainer(gamma=0.995,
                 # in the neural network
                 with tf.GradientTape() as tape:
                     # Train the model on your action selecting network
+                    print("state_sample", np.isnan(state_sample).any())
                     q_values = model(tf.convert_to_tensor(state_sample, dtype=np.float32))
+                    print("q_values", np.isnan(q_values).any())
                     # We consider only the relevant actions
                     Q_of_actions = tf.reduce_sum(tf.multiply(q_values, relevant_actions), axis=1)
+                    print("Q_of_actions", np.isnan(Q_of_actions).any())
                     # Calculate loss between principal network and target network
                     loss = loss_function(tf.expand_dims(Q_targets, 1), tf.expand_dims(Q_of_actions, 1))
+                    print("loss", np.isnan(loss).any())
                     pb.update_priorities(indices, loss.numpy() + 1e-5)
+
                     try:
                         loss = 0.1 * loss.mean() + 0.9 * loss.max()
                     except:
                         loss = 0.1 * tf.math.reduce_mean(loss) + 0.9 * tf.math.reduce_max(loss)
 
                 # Nudge the weights of the trainable variables towards
-                # print(loss)
                 grads = tape.gradient(loss, model.trainable_variables)
                 optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
