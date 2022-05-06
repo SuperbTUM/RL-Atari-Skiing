@@ -92,6 +92,8 @@ class PrioritizedBuffer:
     def update_priorities(self, batch_indices, batch_priorities):
         for idx, prio in zip(batch_indices, batch_priorities):
             self.priorities[idx] = prio
+            print("prio:", prio)
+            print(np.isnan(self.priorities).any())
 
     def __len__(self):
         return self.cnt
@@ -325,6 +327,7 @@ def trainer(gamma=0.995,
                         loss = 0.1 * tf.math.reduce_mean(loss) + 0.9 * tf.math.reduce_max(loss)
 
                 # Nudge the weights of the trainable variables towards
+                # print(loss)
                 grads = tape.gradient(loss, model.trainable_variables)
                 optimizer.apply_gradients(zip(grads, model.trainable_variables))
 

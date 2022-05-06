@@ -1,9 +1,1 @@
-ERROR:2022-05-05 18:47:30:==================================
-Object was never used (type <class 'tensorflow.python.ops.tensor_array_ops.TensorArray'>):
-<tensorflow.python.ops.tensor_array_ops.TensorArray object at 0x00000245202147C8>
-If you want to mark it as used call its "mark_used()" method.
-It was originally created here:
-  File "C:\Users\vanpu\miniconda3\envs\mytf\lib\site-packages\keras\backend.py", line 4650, in <genexpr>
-    ta.write(time, out) for ta, out in zip(output_ta_t, flat_output))  File "C:\Users\vanpu\miniconda3\envs\mytf\lib\site-packages\tensorflow\python\util\tf_should_use.py", line 249, in wrapped
-    error_in_function=error_in_function)
-==================================
+INFO:2022-05-05 20:08:11:epsilon is 0.3, episode is 0
