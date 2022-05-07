@@ -172,7 +172,7 @@ def trainer(gamma=0.995,
             max_memory=10800,
             target_update_every=100,
             max_steps_per_episode=3600,
-            max_episodes=1000,
+            max_episodes=1,
             update_after_actions=4,
             randomly_update_memory_after_actions=True,
             last_n_reward=100,
@@ -364,7 +364,7 @@ def trainer(gamma=0.995,
 
         end = time.time()
         logger.info("time per episode {:.4f} seconds".format(end - start))
-    return running_rewards
+    return running_rewards, model
 
 
 def plot_rewards(running_rewards):
@@ -394,6 +394,25 @@ def torch_gather(x, indices, gather_axis):
     return reshaped
 
 
+def evaluation(model, env):
+    times = 10
+    total_reward = 0
+    for _ in range(times):
+        count = 0
+        state = process_state(env.reset())
+        done = False
+        while not done and count <= 3600:
+            count += 1
+            state_t = tf.convert_to_tensor(state)
+            state_t = tf.expand_dims(state_t, 0)
+            action_vals = model(state_t, training=False)
+            action = tf.argmax(action_vals[0]).numpy()
+            state_next, reward, done, _ = env.step(action)
+            state = process_state(state_next)
+            total_reward += reward
+    return total_reward / times
+
+
 if __name__ == "__main__":
     version = tf.__version__[0]
     if version == "1":
@@ -405,5 +424,6 @@ if __name__ == "__main__":
     for _ in range(play_times):
         heuristic_agent()
 
-    running_rewards = trainer(double_dqn=True, dueling_dqn=True)
+    running_rewards, model = trainer(double_dqn=True, dueling_dqn=True)
     plot_rewards(running_rewards)
+    print(evaluation(model, env))
