@@ -7,6 +7,7 @@ import logging
 from utils import *
 from models import *
 warnings.filterwarnings("ignore")
+import argparse
 # Our Experience Replay memory
 action_history = []
 state_history = []
@@ -172,13 +173,14 @@ def trainer(gamma=0.995,
             max_memory=10800,
             target_update_every=100,
             max_steps_per_episode=3600,
-            max_episodes=1,
+            max_episodes=100,
             update_after_actions=4,
             randomly_update_memory_after_actions=True,
             last_n_reward=100,
             target_avg_reward=-4000,
             double_dqn=False,
-            dueling_dqn=False
+            dueling_dqn=False,
+            include_flag_punishment=False
             ):
     global action_history, state_history, state_next_history, rewards_history, done_history
     # Model used for selecting actions (principal)
@@ -239,10 +241,11 @@ def trainer(gamma=0.995,
             state_next, reward, done, _ = env.step(action)
             state_next = process_state(state_next)
             if done:
-                # # there should be a huge punishment due to not crossing the flags
-                # for i in range(len(pb.rewards_history) - timestep_count, len(pb.rewards_history)):
-                #     pb.rewards_history[i] += reward / timestep_count
-                pass
+                if include_flag_punishment:
+                    # there should be a huge punishment due to not crossing the flags
+                    for i in range(len(pb.rewards_history) - timestep_count, len(pb.rewards_history)):
+                        pb.rewards_history[i] += reward / timestep_count
+                    episode_reward += reward
             else:
                 episode_reward += reward
 
@@ -339,9 +342,9 @@ def trainer(gamma=0.995,
             #     del done_history[:len(done_history)-max_memory]
             if done: break
         if not done:
-            # for i in range(len(pb.rewards_history) - timestep_count, len(pb.rewards_history)):
-            #     pb.rewards_history[i] -= 10000 / timestep_count
-            pass
+            if include_flag_punishment:
+                for i in range(len(pb.rewards_history) - timestep_count, len(pb.rewards_history)):
+                    pb.rewards_history[i] -= 10000 / timestep_count
 
         # reward of last n episodes
         episode_reward_history.append(episode_reward)
@@ -394,7 +397,7 @@ def torch_gather(x, indices, gather_axis):
     return reshaped
 
 
-def evaluation(model, env):
+def evaluation(model, env, include_flag_punishment):
     times = 10
     total_reward = 0
     for _ in range(times):
@@ -408,9 +411,27 @@ def evaluation(model, env):
             action_vals = model(state_t, training=False)
             action = tf.argmax(action_vals[0]).numpy()
             state_next, reward, done, _ = env.step(action)
+            if done:
+                if not include_flag_punishment:
+                    break
             state = process_state(state_next)
             total_reward += reward
     return total_reward / times
+
+
+
+def start(args):
+    for _ in range(args.heuristic):
+        heuristic_agent()
+
+    running_rewards, model = trainer(
+        target_update_every=args.target_update_every,
+        max_memory=args.max_memory,
+        double_dqn=args.double_dqn,
+        dueling_dqn=args.dueling,
+        include_flag_punishment=args.include_flag_punishment)
+    plot_rewards(running_rewards)
+    print(evaluation(model, env, args.include_flag_punishment))
 
 
 if __name__ == "__main__":
@@ -420,10 +441,28 @@ if __name__ == "__main__":
     envname = "Skiing-v0"  # environment name
     env = gym.make(envname)
     resize_shape = (86, 88)
-    play_times = 5
-    for _ in range(play_times):
-        heuristic_agent()
 
-    running_rewards, model = trainer(double_dqn=True, dueling_dqn=True)
-    plot_rewards(running_rewards)
-    print(evaluation(model, env))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--heuristic",
+                        type=int,
+                        help="number of heuristic replay as initialization",
+                        default=5)
+    parser.add_argument("--double_dqn",
+                        action="store_true")
+    parser.add_argument("--dueling",
+                        action="store_true")
+    parser.add_argument("--target_update_every",
+                        type=int,
+                        help="target update every n steps",
+                        default=100)
+    parser.add_argument("--max_memory",
+                        type=int,
+                        help="max memory size as replay buffer",
+                        default=10800)
+    parser.add_argument("--include_flag_punishment",
+                        action="store_true")
+
+    args = parser.parse_args()
+    if args.include_flag_punishment:
+        logger.info("flag punishment activated! All rewards will be rectified!")
+    start(args)
