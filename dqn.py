@@ -8,6 +8,7 @@ from utils import *
 from models import *
 warnings.filterwarnings("ignore")
 import argparse
+from model_utils import *
 # Our Experience Replay memory
 action_history = []
 state_history = []
@@ -356,6 +357,8 @@ def trainer(gamma=0.995,
             if no_improvement >= 3:
                 break
         else:
+            save_model(model)
+            model = load_model(model)
             no_improvement = 0
         running_rewards.append(running_reward)
         episode_count += 1
