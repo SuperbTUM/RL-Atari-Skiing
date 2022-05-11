@@ -181,14 +181,18 @@ def trainer(gamma=0.995,
             target_avg_reward=-4000,
             double_dqn=False,
             dueling_dqn=False,
-            include_flag_punishment=False
+            include_flag_punishment=False,
+            tao=1.,
+            is_noisy=False
             ):
     global action_history, state_history, state_next_history, rewards_history, done_history
     # Model used for selecting actions (principal)
     if dueling_dqn:
-        model = Duel_DQN(is_rnn=True)
-        # Then create the target model. This will periodically be copied from the principal network
-        model_target = Duel_DQN(is_rnn=True)
+        # model = Duel_DQN(is_rnn=True, is_noisy=is_noisy)
+        # # Then create the target model. This will periodically be copied from the principal network
+        # model_target = Duel_DQN(is_rnn=True, is_noisy=is_noisy)
+        model = Duel_DQN_Unrolled()
+        model_target = Duel_DQN_Unrolled()
     else:
         model = DQN(is_rnn=True)
         model_target = DQN(is_rnn=True)
@@ -225,7 +229,7 @@ def trainer(gamma=0.995,
         for timestep in range(1, max_steps_per_episode):
             timestep_count += 1
             # exploration
-            if np.random.random() < epsilon:
+            if np.random.random() < epsilon and not is_noisy:
                 # Take random action
                 action = np.random.choice(3)
             else:
@@ -326,11 +330,17 @@ def trainer(gamma=0.995,
 
                 # Nudge the weights of the trainable variables towards
                 grads = tape.gradient(loss, model.trainable_variables)
+                # for i, grad in enumerate(grads):
+                #     if grad is not None:
+                #         grads[i] = tf.clip_by_norm(grad, 10.)
                 optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
             if timestep_count % target_update_every == 0 or done or timestep_count + 1 == max_steps_per_episode:
-                # update the target network with new weights
-                model_target.set_weights(model.get_weights())
+                # soft update the target network with new weights
+                local_weights = [tao * weights_online for weights_online in model.get_weights()]
+                target_weights = [(1-tao) * weights_target for weights_target in model_target.get_weights()]
+                soft_update = [l + t for l, t in zip(local_weights, target_weights)]
+                model_target.set_weights(soft_update)
                 # Log details
                 template = "running reward: {:.2f} at episode {}, frame count {}, epsilon {}"
                 logger.info(template.format(running_reward, episode_count, timestep_count, epsilon))
@@ -358,7 +368,7 @@ def trainer(gamma=0.995,
                 break
         else:
             save_model(model)
-            model = load_model(model)
+            # model = load_model(model)
             no_improvement = 0
         running_rewards.append(running_reward)
         episode_count += 1
@@ -401,6 +411,7 @@ def torch_gather(x, indices, gather_axis):
 
 
 def evaluation(model, env, include_flag_punishment):
+    model = load_model(model)
     times = 10
     total_reward = 0
     for _ in range(times):
@@ -422,17 +433,20 @@ def evaluation(model, env, include_flag_punishment):
     return total_reward / times
 
 
-
 def start(args):
     for _ in range(args.heuristic):
         heuristic_agent()
 
     running_rewards, model = trainer(
+        batch_size=args.batch_size,
         target_update_every=args.target_update_every,
         max_memory=args.max_memory,
         double_dqn=args.double_dqn,
         dueling_dqn=args.dueling,
-        include_flag_punishment=args.include_flag_punishment)
+        include_flag_punishment=args.include_flag_punishment,
+        tao=args.tao,
+        is_noisy=args.is_noisy
+    )
     plot_rewards(running_rewards)
     print(evaluation(model, env, args.include_flag_punishment))
 
@@ -450,6 +464,9 @@ if __name__ == "__main__":
                         type=int,
                         help="number of heuristic replay as initialization",
                         default=5)
+    parser.add_argument("--batch_size",
+                        type=int,
+                        default=4)
     parser.add_argument("--double_dqn",
                         action="store_true")
     parser.add_argument("--dueling",
@@ -463,6 +480,13 @@ if __name__ == "__main__":
                         help="max memory size as replay buffer",
                         default=10800)
     parser.add_argument("--include_flag_punishment",
+                        help="include flag punishment to reward",
+                        action="store_true")
+    parser.add_argument("--tao",
+                        type=int,
+                        help="hyperparameter for soft update",
+                        default=0.25)
+    parser.add_argument("--is_noisy",
                         action="store_true")
 
     args = parser.parse_args()

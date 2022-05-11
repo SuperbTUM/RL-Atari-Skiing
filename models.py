@@ -94,7 +94,7 @@ class ResDQN(keras.Model):
 
 
 class Duel_DQN(keras.Model):
-    def __init__(self, num_actions=3, is_rnn=False):
+    def __init__(self, num_actions=3, is_rnn=False, is_noisy=False):
         super(Duel_DQN, self).__init__()
         self.num_actions = num_actions
         self.is_rnn = is_rnn
@@ -114,10 +114,18 @@ class Duel_DQN(keras.Model):
         if self.is_rnn:
             self.Lambda = keras.layers.Lambda(lambda x: tf.expand_dims(x, -1))
             self.lstm = keras.layers.LSTM(128, activation="relu")
-        self.fc1_action = keras.layers.Dense(512, activation="relu")
-        self.fc2_action = keras.layers.Dense(self.num_actions)
-        self.fc1_value = keras.layers.Dense(512, activation="relu")
-        self.fc2_value = keras.layers.Dense(1)
+        if is_noisy:
+            self.fc1_action = keras.Sequential([noisy_dense(128, 512),
+                                                keras.layers.ReLU()])
+            self.fc2_action = noisy_dense(512, self.num_actions)
+            self.fc1_value = keras.Sequential([noisy_dense(128, 512),
+                                               keras.layers.ReLU()])
+            self.fc2_value = noisy_dense(512, 1)
+        else:
+            self.fc1_action = keras.layers.Dense(512, activation="relu")
+            self.fc2_action = keras.layers.Dense(self.num_actions)
+            self.fc1_value = keras.layers.Dense(512, activation="relu")
+            self.fc2_value = keras.layers.Dense(1)
 
     def call(self, x, training=True):
         first_conv = self.conv1(x)
@@ -156,7 +164,7 @@ class Duel_DQN_Unrolled(keras.Model):
                                          )
         self.pooling3 = keras.layers.MaxPool2D((2, 2), strides=2)
         self.flatten = keras.layers.Flatten()
-        self.lstm = keras.layers.LSTMCell(256, activation="relu")
+        self.lstm = keras.layers.LSTMCell(256)
         self.fc1_action = keras.layers.Dense(512, activation="relu")
         self.fc2_action = keras.layers.Dense(self.num_actions)
         self.fc1_value = keras.layers.Dense(512, activation="relu")
@@ -189,6 +197,27 @@ class Duel_DQN_Unrolled(keras.Model):
         Q = action + value - tf.broadcast_to(tf.expand_dims(tf.math.reduce_mean(action, 1), axis=1),
                                              shape=(tf.shape(x)[0], self.num_actions))
         return Q
+
+
+class noisy_dense(keras.Model):
+    def __init__(self, in_features, units):
+        super(noisy_dense, self).__init__()
+        self.units = units
+        w_shape = [self.units, in_features]
+        mu_w = tf.Variable(initial_value=tf.random.truncated_normal(shape=w_shape))
+        sigma_w = tf.Variable(initial_value=tf.constant(0.017, shape=w_shape))
+        epsilon_w = tf.random.uniform(shape=w_shape)
+
+        b_shape = [self.units]
+        mu_b = tf.Variable(initial_value=tf.random.truncated_normal(shape=b_shape))
+        sigma_b = tf.Variable(initial_value=tf.constant(0.017, shape=b_shape))
+        epsilon_b = tf.random.uniform(shape=b_shape)
+
+        self.w = tf.add(mu_w, tf.multiply(sigma_w, epsilon_w))
+        self.b = tf.add(mu_b, tf.multiply(sigma_b, epsilon_b))
+
+    def call(self, x, training=True):
+        return tf.matmul(x, tf.transpose(self.w)) + self.b
 
 
 if __name__ == "__main__":
