@@ -67,7 +67,7 @@ class PrioritizedBuffer:
         self.beta = min(1.0, self.beta + frame_idx * (1.0 - self.beta) / beta_frames)
         return
 
-    def sample(self, frame_idx, batch_size=20, beta_frames=3000):
+    def sample(self, frame_idx, batch_size=20, beta_frames=72000):
         self._beta_update(frame_idx, beta_frames)
         prios = self.priorities[:min(self.capacity, len(self.action_history))]
 
@@ -174,7 +174,7 @@ def trainer(gamma=0.995,
             max_memory=10800,
             target_update_every=100,
             max_steps_per_episode=3600,
-            max_episodes=100,
+            max_episodes=20,
             update_after_actions=4,
             randomly_update_memory_after_actions=True,
             last_n_reward=100,
@@ -183,16 +183,18 @@ def trainer(gamma=0.995,
             dueling_dqn=False,
             include_flag_punishment=False,
             tao=1.,
-            is_noisy=False
+            is_noisy=False,
+            mixed_loss=0.9,
+            is_grad_clip=False
             ):
     global action_history, state_history, state_next_history, rewards_history, done_history
     # Model used for selecting actions (principal)
     if dueling_dqn:
-        # model = Duel_DQN(is_rnn=True, is_noisy=is_noisy)
-        # # Then create the target model. This will periodically be copied from the principal network
-        # model_target = Duel_DQN(is_rnn=True, is_noisy=is_noisy)
-        model = Duel_DQN_Unrolled()
-        model_target = Duel_DQN_Unrolled()
+        model = Duel_DQN(is_rnn=True, is_noisy=is_noisy)
+        # Then create the target model. This will periodically be copied from the principal network
+        model_target = Duel_DQN(is_rnn=True, is_noisy=is_noisy)
+        # model = Duel_DQN_Unrolled()
+        # model_target = Duel_DQN_Unrolled()
     else:
         model = DQN(is_rnn=True)
         model_target = DQN(is_rnn=True)
@@ -218,12 +220,12 @@ def trainer(gamma=0.995,
     epsilon = .3
     running_rewards = list()
     pb = PrioritizedBuffer(capacity=max_memory)
+    timestep_count = 0
 
     for episode in range(max_episodes):
         logger.info("epsilon is " + str(epsilon) + ", episode is " + str(episode))
         state = process_state(np.asarray(env.reset()))
         episode_reward = 0
-        timestep_count = 0
         done = False
         start = time.time()
         for timestep in range(1, max_steps_per_episode):
@@ -248,8 +250,8 @@ def trainer(gamma=0.995,
             if done:
                 if include_flag_punishment:
                     # there should be a huge punishment due to not crossing the flags
-                    for i in range(len(pb.rewards_history) - timestep_count, len(pb.rewards_history)):
-                        pb.rewards_history[i] += reward / timestep_count
+                    for i in range(len(pb.rewards_history) - timestep, len(pb.rewards_history)):
+                        pb.rewards_history[i] += reward / timestep
                     episode_reward += reward
             else:
                 episode_reward += reward
@@ -291,7 +293,7 @@ def trainer(gamma=0.995,
                 # action_history = action_history.tolist()
                 # done_history = done_history.tolist()
                 state_sample, action_sample, rewards_sample, state_next_sample, done_sample, indices, weights = \
-                    pb.sample(timestep, batch_size)
+                    pb.sample(timestep_count, batch_size, max_episodes * max_steps_per_episode)
 
                 state_next_sample = tf.convert_to_tensor(state_next_sample)
 
@@ -321,21 +323,25 @@ def trainer(gamma=0.995,
                     # We consider only the relevant actions
                     Q_of_actions = tf.reduce_sum(tf.multiply(q_values, relevant_actions), axis=1)
                     # Calculate loss between principal network and target network
-                    loss = loss_function(tf.expand_dims(Q_targets, 1), tf.expand_dims(Q_of_actions, 1))
-                    pb.update_priorities(indices, loss.numpy() + 1e-5)
+                    gt = tf.expand_dims(Q_targets, 1)
+                    predict = tf.expand_dims(Q_of_actions, 1)
+                    loss = loss_function(gt, predict)
+                    pb.update_priorities(indices, tf.math.squared_difference(gt, predict).numpy() + 1e-5)
+                    loss *= weights
                     try:
-                        loss = 0.1 * loss.mean() + 0.9 * loss.max()
+                        loss = (1-mixed_loss) * loss.mean() + mixed_loss * loss.max()
                     except:
-                        loss = 0.1 * tf.math.reduce_mean(loss) + 0.9 * tf.math.reduce_max(loss)
+                        loss = (1-mixed_loss) * tf.math.reduce_mean(loss) + mixed_loss * tf.math.reduce_max(loss)
 
                 # Nudge the weights of the trainable variables towards
                 grads = tape.gradient(loss, model.trainable_variables)
-                # for i, grad in enumerate(grads):
-                #     if grad is not None:
-                #         grads[i] = tf.clip_by_norm(grad, 10.)
+                if is_grad_clip:
+                    for i, grad in enumerate(grads):
+                        if grad is not None:
+                            grads[i] = tf.clip_by_norm(grad, 10.)
                 optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
-            if timestep_count % target_update_every == 0 or done or timestep_count + 1 == max_steps_per_episode:
+            if timestep_count % target_update_every == 0 or done or timestep + 1 == max_steps_per_episode:
                 # soft update the target network with new weights
                 local_weights = [tao * weights_online for weights_online in model.get_weights()]
                 target_weights = [(1-tao) * weights_target for weights_target in model_target.get_weights()]
@@ -354,8 +360,8 @@ def trainer(gamma=0.995,
             if done: break
         if not done:
             if include_flag_punishment:
-                for i in range(len(pb.rewards_history) - timestep_count, len(pb.rewards_history)):
-                    pb.rewards_history[i] -= 10000 / timestep_count
+                for i in range(len(pb.rewards_history) - timestep, len(pb.rewards_history)):
+                    pb.rewards_history[i] -= 10000 / timestep
 
         # reward of last n episodes
         episode_reward_history.append(episode_reward)
@@ -439,6 +445,7 @@ def start(args):
 
     running_rewards, model = trainer(
         batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
         target_update_every=args.target_update_every,
         max_memory=args.max_memory,
         double_dqn=args.double_dqn,
@@ -467,6 +474,9 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size",
                         type=int,
                         default=4)
+    parser.add_argument("--learning_rate",
+                        type=float,
+                        default=1e-5)
     parser.add_argument("--double_dqn",
                         action="store_true")
     parser.add_argument("--dueling",

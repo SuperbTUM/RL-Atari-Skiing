@@ -21,5 +21,5 @@ As we are building a playground,
 there are several ways of starting experiments.
 One example could be as follows:
 
-`python .\dqn.py --double_dqn --dueling --batch_size 32`
+`python .\dqn.py --double_dqn --dueling --learning_rate 0.001`
 
