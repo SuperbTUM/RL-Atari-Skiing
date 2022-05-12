@@ -2,6 +2,8 @@ import os
 
 
 def save_model(model):
+    if not os.path.exists("weights/"):
+        os.mkdir("weights/")
     model.save_weights("weights/checkpoint.h5")
     assert os.path.exists("weights/checkpoint.h5")
 

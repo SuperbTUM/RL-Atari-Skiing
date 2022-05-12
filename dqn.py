@@ -67,14 +67,19 @@ class PrioritizedBuffer:
         self.beta = min(1.0, self.beta + frame_idx * (1.0 - self.beta) / beta_frames)
         return
 
-    def sample(self, frame_idx, batch_size=20, beta_frames=72000):
+    def sample(self, frame_idx, batch_size=20, beta_frames=72000, is_sequential=False):
         self._beta_update(frame_idx, beta_frames)
         prios = self.priorities[:min(self.capacity, len(self.action_history))]
 
         probs = prios ** self.prob_alpha
         probs /= probs.sum()
 
-        indices = np.random.choice(range(len(self.action_history)), batch_size, p=probs, replace=False)
+        if is_sequential:
+            start_indice = np.random.choice(range(len(self.action_history)), 1, p=probs)
+            indices = np.arange(start=start_indice, stop=start_indice+batch_size)
+            indices = np.where(indices >= len(self.action_history), indices - len(self.action_history), indices)
+        else:
+            indices = np.random.choice(range(len(self.action_history)), batch_size, p=probs, replace=False)
         state_samples = np.asarray([self.state_history[idx] for idx in indices])
         next_state_samples = np.asarray([self.state_next_history[idx] for idx in indices])
         action_samples = np.asarray([self.action_history[idx] for idx in indices])
@@ -185,16 +190,19 @@ def trainer(gamma=0.995,
             tao=1.,
             is_noisy=False,
             mixed_loss=0.9,
-            is_grad_clip=False
+            is_grad_clip=False,
+            is_unrolled=False,
             ):
     global action_history, state_history, state_next_history, rewards_history, done_history
     # Model used for selecting actions (principal)
     if dueling_dqn:
-        model = Duel_DQN(is_rnn=True, is_noisy=is_noisy)
-        # Then create the target model. This will periodically be copied from the principal network
-        model_target = Duel_DQN(is_rnn=True, is_noisy=is_noisy)
-        # model = Duel_DQN_Unrolled()
-        # model_target = Duel_DQN_Unrolled()
+        if is_unrolled:
+            model = Duel_DQN_Unrolled()
+            model_target = Duel_DQN_Unrolled()
+        else:
+            model = Duel_DQN(is_rnn=True, is_noisy=is_noisy)
+            model_target = Duel_DQN(is_rnn=True, is_noisy=is_noisy)
+
     else:
         model = DQN(is_rnn=True)
         model_target = DQN(is_rnn=True)
@@ -202,7 +210,7 @@ def trainer(gamma=0.995,
     model.build((batch_size, resize_shape[0], resize_shape[1], 1))
     model_target.build((batch_size, resize_shape[0], resize_shape[1], 1))
 
-    optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
+    optimizer = keras.optimizers.Adam(learning_rate=learning_rate, epsilon=1e-3)
     reduction = tf.keras.losses.Reduction.NONE if version == "2" else tf.losses.Reduction.NONE
     loss_function = keras.losses.Huber(
         reduction=reduction)  # You can use the Huber loss function or the mean squared error
@@ -293,7 +301,7 @@ def trainer(gamma=0.995,
                 # action_history = action_history.tolist()
                 # done_history = done_history.tolist()
                 state_sample, action_sample, rewards_sample, state_next_sample, done_sample, indices, weights = \
-                    pb.sample(timestep_count, batch_size, max_episodes * max_steps_per_episode)
+                    pb.sample(timestep_count, batch_size, max_episodes * max_steps_per_episode, is_unrolled)
 
                 state_next_sample = tf.convert_to_tensor(state_next_sample)
 
@@ -326,7 +334,8 @@ def trainer(gamma=0.995,
                     gt = tf.expand_dims(Q_targets, 1)
                     predict = tf.expand_dims(Q_of_actions, 1)
                     loss = loss_function(gt, predict)
-                    pb.update_priorities(indices, tf.math.squared_difference(gt, predict).numpy() + 1e-5)
+                    absolute_loss = tf.abs(gt - predict)
+                    pb.update_priorities(indices, absolute_loss.numpy() + 1e-5)
                     loss *= weights
                     try:
                         loss = (1-mixed_loss) * loss.mean() + mixed_loss * loss.max()
@@ -416,9 +425,8 @@ def torch_gather(x, indices, gather_axis):
     return reshaped
 
 
-def evaluation(model, env, include_flag_punishment):
+def evaluation(model, env, include_flag_punishment, times=10):
     model = load_model(model)
-    times = 10
     total_reward = 0
     for _ in range(times):
         count = 0
@@ -452,10 +460,11 @@ def start(args):
         dueling_dqn=args.dueling,
         include_flag_punishment=args.include_flag_punishment,
         tao=args.tao,
-        is_noisy=args.is_noisy
+        is_noisy=args.is_noisy,
+        is_unrolled=args.is_unrolled
     )
     plot_rewards(running_rewards)
-    print(evaluation(model, env, args.include_flag_punishment))
+    print(evaluation(model, env, args.include_flag_punishment, 2))
 
 
 if __name__ == "__main__":
@@ -497,6 +506,8 @@ if __name__ == "__main__":
                         help="hyperparameter for soft update",
                         default=0.25)
     parser.add_argument("--is_noisy",
+                        action="store_true")
+    parser.add_argument("--is_unrolled",
                         action="store_true")
 
     args = parser.parse_args()
