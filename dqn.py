@@ -190,7 +190,7 @@ def trainer(gamma=0.995,
             tao=1.,
             is_rnn=False,
             is_noisy=False,
-            mixed_loss=0.9,
+            eta=0.9,
             is_grad_clip=False,
             is_unrolled=False,
             training=True
@@ -340,12 +340,11 @@ def trainer(gamma=0.995,
                     predict = tf.expand_dims(Q_of_actions, 1)
                     loss = loss_function(gt, predict)
                     absolute_loss = tf.abs(gt - predict)
-                    pb.update_priorities(indices, absolute_loss.numpy() + 1e-5)
+                    mixed_td_error = (1-eta) * tf.math.reduce_mean(absolute_loss, axis=0) + \
+                                     eta * tf.math.reduce_max(absolute_loss, axis=0)
+                    pb.update_priorities(indices, mixed_td_error.numpy() + 1e-5)
                     loss *= weights
-                    try:
-                        loss = (1-mixed_loss) * loss.mean() + mixed_loss * loss.max()
-                    except:
-                        loss = (1-mixed_loss) * tf.math.reduce_mean(loss) + mixed_loss * tf.math.reduce_max(loss)
+                    loss = tf.math.reduce_mean(loss, axis=0)
 
                 # Nudge the weights of the trainable variables towards
                 grads = tape.gradient(loss, model.trainable_variables)

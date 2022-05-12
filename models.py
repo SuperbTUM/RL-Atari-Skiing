@@ -115,10 +115,11 @@ class Duel_DQN(keras.Model):
             self.Lambda = keras.layers.Lambda(lambda x: tf.expand_dims(x, -1))
             self.lstm = keras.layers.LSTM(128, activation="relu")
         if is_noisy:
-            self.fc1_action = keras.Sequential([noisy_dense(128, 512),
+            in_features = 128 if self.is_rnn else 64
+            self.fc1_action = keras.Sequential([noisy_dense(in_features, 512),
                                                 keras.layers.ReLU()])
             self.fc2_action = noisy_dense(512, self.num_actions)
-            self.fc1_value = keras.Sequential([noisy_dense(128, 512),
+            self.fc1_value = keras.Sequential([noisy_dense(in_features, 512),
                                                keras.layers.ReLU()])
             self.fc2_value = noisy_dense(512, 1)
         else:
