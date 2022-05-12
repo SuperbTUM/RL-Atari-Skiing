@@ -192,6 +192,7 @@ def trainer(gamma=0.995,
             mixed_loss=0.9,
             is_grad_clip=False,
             is_unrolled=False,
+            training=True
             ):
     global action_history, state_history, state_next_history, rewards_history, done_history
     # Model used for selecting actions (principal)
@@ -209,6 +210,9 @@ def trainer(gamma=0.995,
 
     model.build((batch_size, resize_shape[0], resize_shape[1], 1))
     model_target.build((batch_size, resize_shape[0], resize_shape[1], 1))
+
+    if not training:
+        return 0, model_target
 
     optimizer = keras.optimizers.Adam(learning_rate=learning_rate, epsilon=1e-3)
     reduction = tf.keras.losses.Reduction.NONE if version == "2" else tf.losses.Reduction.NONE
@@ -448,8 +452,9 @@ def evaluation(model, env, include_flag_punishment, times=10):
 
 
 def start(args):
-    for _ in range(args.heuristic):
-        heuristic_agent()
+    if args.training:
+        for _ in range(args.heuristic):
+            heuristic_agent()
 
     running_rewards, model = trainer(
         batch_size=args.batch_size,
@@ -461,7 +466,8 @@ def start(args):
         include_flag_punishment=args.include_flag_punishment,
         tao=args.tao,
         is_noisy=args.is_noisy,
-        is_unrolled=args.is_unrolled
+        is_unrolled=args.is_unrolled,
+        training=args.training
     )
     plot_rewards(running_rewards)
     print(evaluation(model, env, args.include_flag_punishment, 2))
@@ -509,8 +515,10 @@ if __name__ == "__main__":
                         action="store_true")
     parser.add_argument("--is_unrolled",
                         action="store_true")
+    parser.add_argument("--training",
+                        action="store_true")
 
     args = parser.parse_args()
-    if args.include_flag_punishment:
+    if args.include_flag_punishment and args.training:
         logger.info("flag punishment activated! All rewards will be rectified!")
     start(args)
