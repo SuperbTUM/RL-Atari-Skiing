@@ -8,6 +8,6 @@ def save_model(model):
     assert os.path.exists("weights/checkpoint.h5")
 
 
-def load_model(model, path="weights/checkpoint.h5"):
+def load_model(model, path):
     model.load_weights(path)
     return model

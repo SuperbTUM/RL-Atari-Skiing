@@ -188,6 +188,7 @@ def trainer(gamma=0.995,
             dueling_dqn=False,
             include_flag_punishment=False,
             tao=1.,
+            is_rnn=False,
             is_noisy=False,
             mixed_loss=0.9,
             is_grad_clip=False,
@@ -201,12 +202,12 @@ def trainer(gamma=0.995,
             model = Duel_DQN_Unrolled()
             model_target = Duel_DQN_Unrolled()
         else:
-            model = Duel_DQN(is_rnn=True, is_noisy=is_noisy)
-            model_target = Duel_DQN(is_rnn=True, is_noisy=is_noisy)
+            model = Duel_DQN(is_rnn=is_rnn, is_noisy=is_noisy)
+            model_target = Duel_DQN(is_rnn=is_rnn, is_noisy=is_noisy)
 
     else:
-        model = DQN(is_rnn=True)
-        model_target = DQN(is_rnn=True)
+        model = DQN(is_rnn=is_rnn)
+        model_target = DQN(is_rnn=is_rnn)
 
     model.build((batch_size, resize_shape[0], resize_shape[1], 1))
     model_target.build((batch_size, resize_shape[0], resize_shape[1], 1))
@@ -429,8 +430,8 @@ def torch_gather(x, indices, gather_axis):
     return reshaped
 
 
-def evaluation(model, env, include_flag_punishment, times=10):
-    model = load_model(model)
+def evaluation(model, env, path, include_flag_punishment, times=10):
+    model = load_model(model, path)
     total_reward = 0
     for _ in range(times):
         count = 0
@@ -466,11 +467,13 @@ def start(args):
         include_flag_punishment=args.include_flag_punishment,
         tao=args.tao,
         is_noisy=args.is_noisy,
+        is_rnn=args.is_rnn,
         is_unrolled=args.is_unrolled,
         training=args.training
     )
-    plot_rewards(running_rewards)
-    print(evaluation(model, env, args.include_flag_punishment, 2))
+    if args.training:
+        plot_rewards(running_rewards)
+    print(evaluation(model, env, args.checkpoint, args.include_flag_punishment, 2))
 
 
 if __name__ == "__main__":
@@ -511,12 +514,18 @@ if __name__ == "__main__":
                         type=int,
                         help="hyperparameter for soft update",
                         default=0.25)
+    parser.add_argument("--is_rnn",
+                        action="store_true")
     parser.add_argument("--is_noisy",
                         action="store_true")
     parser.add_argument("--is_unrolled",
                         action="store_true")
     parser.add_argument("--training",
                         action="store_true")
+    parser.add_argument("--checkpoint",
+                        type=str,
+                        help="path to checkpoint of DQN model",
+                        default="weights/checkpoint.h5")
 
     args = parser.parse_args()
     if args.include_flag_punishment and args.training:
