@@ -16,6 +16,7 @@ state_next_history = []
 rewards_history = []
 done_history = []
 priorities = []
+trajectories = []
 log_path = "skiing.log"
 logging.basicConfig(filename=log_path, level=logging.INFO,
                     filemode='w', format='%(levelname)s:%(asctime)s:%(message)s', datefmt='%Y-%d-%m %H:%M:%S')
@@ -31,11 +32,13 @@ class PrioritizedBuffer:
         self.state_next_history = state_next_history[:min(capacity, len(state_next_history))]
         self.rewards_history = rewards_history[:min(capacity, len(rewards_history))]
         self.done_history = done_history[:min(capacity, len(done_history))]
+        self.trajectories = trajectories[:min(capacity, len(trajectories))]
         assert len(self.action_history) <= capacity
         assert len(self.state_history) <= capacity
         assert len(self.state_next_history) <= capacity
         assert len(self.rewards_history) <= capacity
         assert len(self.done_history) <= capacity
+        assert len(self.trajectories) <= capacity
         if len(priorities) >= capacity:
             self.priorities = np.asarray(priorities[:capacity], dtype=np.float32)
         else:
@@ -43,7 +46,7 @@ class PrioritizedBuffer:
         self.cnt = len(action_history)
         self.beta = beta
 
-    def push(self, state, action, reward, next_state, done):
+    def push(self, state, action, reward, next_state, done, episode):
         max_prio = np.max(self.priorities) if self.state_history else 1.0
         pos = np.argmin(self.priorities) if self.state_history else 0
 
@@ -53,6 +56,7 @@ class PrioritizedBuffer:
             self.state_next_history.append(next_state)
             self.rewards_history.append(reward)
             self.done_history.append(done)
+            self.trajectories.append(episode)
             self.cnt += 1
         else:
             self.action_history[pos] = action
@@ -60,6 +64,7 @@ class PrioritizedBuffer:
             self.state_next_history[pos] = next_state
             self.rewards_history[pos] = reward
             self.done_history[pos] = done
+            self.trajectories[pos] = episode
 
         self.priorities[pos] = max_prio
 
@@ -75,9 +80,11 @@ class PrioritizedBuffer:
         probs /= probs.sum()
 
         if is_sequential:
-            start_indice = np.random.choice(range(len(self.action_history)), 1, p=probs)
+            start_indice = np.random.choice(range(len(self.action_history)), p=probs)
+            while start_indice + batch_size > len(self.trajectories) or\
+            self.trajectories[start_indice] * batch_size != sum(self.trajectories[start_indice:start_indice+batch_size]):
+                start_indice = np.random.choice(range(len(self.action_history)), p=probs)
             indices = np.arange(start=start_indice, stop=start_indice+batch_size)
-            indices = np.where(indices >= len(self.action_history), indices - len(self.action_history), indices)
         else:
             indices = np.random.choice(range(len(self.action_history)), batch_size, p=probs, replace=False)
         state_samples = np.asarray([self.state_history[idx] for idx in indices])
@@ -85,6 +92,7 @@ class PrioritizedBuffer:
         action_samples = np.asarray([self.action_history[idx] for idx in indices])
         reward_samples = np.asarray([self.rewards_history[idx] for idx in indices])
         done_samples = np.asarray([self.done_history[idx] for idx in indices])
+        trajectory_samples = np.asarray([self.trajectories[idx] for idx in indices])
 
         total = len(self.action_history)
         weights = (total * probs[indices]) ** (-self.beta)
@@ -92,7 +100,7 @@ class PrioritizedBuffer:
         weights = np.array(weights, dtype=np.float32)
 
         return state_samples, \
-               action_samples, reward_samples, next_state_samples, done_samples, indices, weights
+               action_samples, reward_samples, next_state_samples, done_samples, trajectory_samples, indices, weights
 
     def update_priorities(self, batch_indices, batch_priorities):
         for idx, prio in zip(batch_indices, batch_priorities):
@@ -102,7 +110,7 @@ class PrioritizedBuffer:
         return self.cnt
 
 
-def heuristic_agent():
+def heuristic_agent(episode):
     def get_pos_player(observe):
         ids = np.where(np.sum(observe == [214, 92, 92], -1) == 3)
         return ids[0].mean(), ids[1].mean()
@@ -162,6 +170,7 @@ def heuristic_agent():
             state_next_history.append(state_next)
             state_history.append(state)
             done_history.append(done)
+            trajectories.append(episode)
             priorities.append(max(priorities) if priorities else 1.0)
 
         r_a, c_a = get_pos_player(observe)
@@ -186,6 +195,7 @@ def trainer(gamma=0.995,
             target_avg_reward=-4000,
             double_dqn=False,
             dueling_dqn=False,
+            go_explore=False,
             include_flag_punishment=False,
             tao=1.,
             is_rnn=False,
@@ -193,7 +203,8 @@ def trainer(gamma=0.995,
             eta=0.9,
             is_grad_clip=False,
             is_unrolled=False,
-            training=True
+            training=True,
+            start_episode=0
             ):
     global action_history, state_history, state_next_history, rewards_history, done_history
     # Model used for selecting actions (principal)
@@ -201,6 +212,9 @@ def trainer(gamma=0.995,
         if is_unrolled:
             model = Duel_DQN_Unrolled()
             model_target = Duel_DQN_Unrolled()
+        elif go_explore:
+            model = GoExplore()
+            model_target = GoExplore()
         else:
             model = Duel_DQN(is_rnn=is_rnn, is_noisy=is_noisy)
             model_target = Duel_DQN(is_rnn=is_rnn, is_noisy=is_noisy)
@@ -236,6 +250,7 @@ def trainer(gamma=0.995,
     timestep_count = 0
 
     for episode in range(max_episodes):
+        episode_buffer = episode + start_episode
         logger.info("epsilon is " + str(epsilon) + ", episode is " + str(episode))
         state = process_state(np.asarray(env.reset()))
         episode_reward = 0
@@ -270,12 +285,7 @@ def trainer(gamma=0.995,
                 episode_reward += reward
 
             # Save action/states and other information in replay buffer
-            pb.push(state, action, reward, state_next, done)
-            # action_history.append(action)
-            # state_history.append(state)
-            # state_next_history.append(state_next)
-            # rewards_history.append(reward)
-            # done_history.append(done)
+            pb.push(state, action, reward, state_next, done, episode_buffer)
 
             state = state_next
 
@@ -305,7 +315,7 @@ def trainer(gamma=0.995,
                 # rewards_history = rewards_history.tolist()
                 # action_history = action_history.tolist()
                 # done_history = done_history.tolist()
-                state_sample, action_sample, rewards_sample, state_next_sample, done_sample, indices, weights = \
+                state_sample, action_sample, rewards_sample, state_next_sample, done_sample, trajectory_samples, indices, weights = \
                     pb.sample(timestep_count, batch_size, max_episodes * max_steps_per_episode, is_unrolled)
 
                 state_next_sample = tf.convert_to_tensor(state_next_sample)
@@ -453,9 +463,10 @@ def evaluation(model, env, path, include_flag_punishment, times=10):
 
 def start(args):
     if args.training:
-        for _ in range(args.heuristic):
-            heuristic_agent()
+        for i in range(args.heuristic):
+            heuristic_agent(i)
 
+    start_episode = args.heuristic
     running_rewards, model = trainer(
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
@@ -468,7 +479,8 @@ def start(args):
         is_noisy=args.is_noisy,
         is_rnn=args.is_rnn,
         is_unrolled=args.is_unrolled,
-        training=args.training
+        training=args.training,
+        start_episode=start_episode,
     )
     if args.training:
         plot_rewards(running_rewards)
@@ -497,6 +509,8 @@ if __name__ == "__main__":
     parser.add_argument("--double_dqn",
                         action="store_true")
     parser.add_argument("--dueling",
+                        action="store_true")
+    parser.add_argument("--go_explore",
                         action="store_true")
     parser.add_argument("--target_update_every",
                         type=int,

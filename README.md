@@ -22,7 +22,7 @@ As we are building a playground,
 there are several ways of starting experiments.
 One example could be as follows:
 
-`python .\dqn.py --double_dqn --dueling --is_rnn --learning_rate 0.001 --training`
+`python .\dqn.py --double_dqn --dueling --is_rnn --learning_rate 0.001 --training --include_flag_punishment`
 
 ## Checkpoints
 
